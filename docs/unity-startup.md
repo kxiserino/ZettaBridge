@@ -13,11 +13,17 @@ Development ADB was used. No physical-device, account-login or gameplay acceptan
 | `eglCreateWindowSurface` rejected a released window handle. | Keep guest handles until the final acquired reference is released. Fix the mock backend to model reference counts too. | EGL creates a 720x1280 surface and Unity issues OpenGL calls. |
 | The screen stayed black with 868 GL calls and zero swaps. Boehm GC (IL2CPP) suspends threads with `SIGPWR` and waits for each to acknowledge. The target thread's handler calls `rt_sigsuspend`, which was unimplemented (`-ENOSYS`), so the handler spun; a thread already blocked in a guest futex never returned to the stop dispatcher at all, so the signal was never delivered. | Implement `rt_sigsuspend`/`sigsuspend` (park on the per-thread post word until a deliverable signal is pending) and bound every blocking guest futex wait so a posted signal is observed within one poll. | The stop-the-world handshake completes; Kanto renders its splash and reaches `prepareLoginScreen`. |
 
-Current result: the game renders real frames (`nativeRender`, rising `egl-swaps`)
-and the Kanto splash is visible. The runtime report shows no guest exit, no
-unimplemented host call and no JNI error. The client is a private-server build and
-no account/server has been supplied, so playability past the login screen is not
-assessed here. Do not claim acceptable speed or a working game from this checkpoint.
+| The boot stalled on the splash: `UnityUtil.nativeInit` threw `UnsatisfiedLinkError` because `libNianticLabsPlugin.so` is a shim whose `JNI_OnLoad` dlopens the real `libkantoLegacyN2.so`. ART resolves a native method against the library Java loaded, and ZettaBridge only bound `Java_*` exports of libraries loaded through the proxy. | After each loader call, scan the libraries the guest mapped itself, reopen each with `RTLD_NOLOAD` and bind its `Java_*` exports. | `nativeInit` binds; the game boots to the date-of-birth (age gate) screen. |
+
+Current result: the game renders and reaches the interactive **date-of-birth
+(age gate) screen**, where the month/day/year fields and SUBMIT respond. The
+runtime report shows no guest exit, no unimplemented host call and no JNI error.
+Speed on the emulator is low: it runs on SwiftShader (software GL) and an
+ARM32-to-ARM64 JIT, and the emulator's `-gpu host` path renders black (only 4
+swaps) for this client, so the emulator cannot be made fast. Performance on real
+ARM64 hardware (the target device) is not yet measured. The client is a
+private-server build and no server/account has been supplied, so past the age
+gate is not assessed. Do not claim acceptable speed or a working game.
 
 ## Checks
 
