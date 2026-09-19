@@ -43,6 +43,72 @@ final class ManifestReader {
         return null;
     }
 
+    /**
+     * The plugin activity that declares an intent-filter for `scheme` (and `host`, when the filter
+     * names one). Used to deliver a browser OAuth callback to the plugin: the launcher registers a
+     * deep-link activity for known plugin schemes, and this finds where the plugin wants it.
+     */
+    static String findDeepLinkActivity(Resources res, String packageName, String scheme, String host) {
+        if (scheme == null) return null;
+        AssetManager assets = res.getAssets();
+        for (int cookie = 1; cookie <= MAX_COOKIES; cookie++) {
+            XmlResourceParser parser;
+            try {
+                parser = assets.openXmlResourceParser(cookie, "AndroidManifest.xml");
+            } catch (IOException | RuntimeException e) {
+                continue;
+            }
+            try {
+                String found = scanDeepLink(parser, packageName, scheme, host);
+                if (found != null) return found;
+            } catch (XmlPullParserException | IOException e) {
+                // not a readable manifest for this cookie
+            } finally {
+                parser.close();
+            }
+        }
+        return null;
+    }
+
+    private static String scanDeepLink(XmlResourceParser p, String packageName, String scheme, String host)
+            throws XmlPullParserException, IOException {
+        String component = null;
+        boolean view = false;
+        boolean dataMatch = false;
+        boolean inFilter = false;
+        for (int event = p.getEventType(); event != XmlPullParser.END_DOCUMENT; event = p.next()) {
+            if (event == XmlPullParser.START_TAG) {
+                String tag = p.getName();
+                if (tag.equals("manifest")) {
+                    if (!packageName.equals(p.getAttributeValue(null, "package"))) return null;
+                } else if (tag.equals("activity")) {
+                    component = resolve(packageName, p.getAttributeValue(ANDROID_NS, "name"));
+                } else if (tag.equals("activity-alias")) {
+                    component = resolve(packageName, p.getAttributeValue(ANDROID_NS, "targetActivity"));
+                } else if (tag.equals("intent-filter") && component != null) {
+                    inFilter = true;
+                    view = false;
+                    dataMatch = false;
+                } else if (inFilter && tag.equals("action")) {
+                    view |= Intent.ACTION_VIEW.equals(p.getAttributeValue(ANDROID_NS, "name"));
+                } else if (inFilter && tag.equals("data")) {
+                    String s = p.getAttributeValue(ANDROID_NS, "scheme");
+                    String h = p.getAttributeValue(ANDROID_NS, "host");
+                    if (scheme.equals(s) && (host == null || h == null || host.equals(h))) dataMatch = true;
+                }
+            } else if (event == XmlPullParser.END_TAG) {
+                String tag = p.getName();
+                if (tag.equals("intent-filter") && inFilter) {
+                    inFilter = false;
+                    if (view && dataMatch) return component;
+                } else if (tag.equals("activity") || tag.equals("activity-alias")) {
+                    component = null;
+                }
+            }
+        }
+        return null;
+    }
+
     private static final class Result {
         boolean matched;
         String launcher;

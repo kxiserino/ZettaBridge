@@ -98,6 +98,31 @@
             android:process=":guest"
             android:taskAffinity="com.zettabridge.launcher.guest"
             android:theme="@android:style/Theme.Material.NoActionBar" />
+        <!-- Browser/OAuth callback entry point. A plugin that signs in through a browser declares
+             its own scheme in its manifest; the system would otherwise hand the redirect to a
+             separately installed copy of the app. These filters cover the schemes the Kanto client
+             declares (kanto://pair and ac.kanto.client://pair); DeepLinkActivity forwards the URI
+             to the active plugin activity that declares it. -->
+        <activity
+            android:name=".DeepLinkActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:process=":guest"
+            android:taskAffinity="com.zettabridge.launcher.guest"
+            android:theme="@android:style/Theme.NoDisplay">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="kanto" android:host="pair" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="ac.kanto.client" android:host="pair" />
+            </intent-filter>
+        </activity>
         <!-- AndroidIDE injects the Kotlin-based LogWire logger into debug builds. This app has no
              Kotlin stdlib, so its init provider crashes the main process. Drop it. -->
         <provider

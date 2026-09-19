@@ -75,8 +75,16 @@ final class GuestInstrumentation extends Instrumentation {
             throw new IllegalStateException("Instrumentation.execStartActivity not found", e);
         }
         Intent routed = runtime.route(intent);
-        return (ActivityResult) Reflect.invoke(execStartActivity, base, who, contextThread, token, target, routed,
-                requestCode, options);
+        Log.i(TAG, "execStartActivity: " + (intent.getComponent() == null ? "implicit " + intent.getAction()
+                : intent.getComponent().flattenToShortString()) + " -> "
+                + (routed.getComponent() == null ? "implicit" : routed.getComponent().flattenToShortString()));
+        try {
+            return (ActivityResult) Reflect.invoke(execStartActivity, base, who, contextThread, token, target, routed,
+                    requestCode, options);
+        } catch (RuntimeException e) {
+            Log.w(TAG, "execStartActivity failed for " + routed, e);
+            throw e;
+        }
     }
 
     public ActivityResult execStartActivity(Context who, IBinder contextThread, IBinder token, String target,
