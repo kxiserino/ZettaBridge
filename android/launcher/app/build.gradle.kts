@@ -25,7 +25,11 @@ android {
     defaultConfig {
         applicationId = "com.zettabridge.launcher"
         minSdk = 26
-        targetSdk = 35
+        // 30, not 35: the plugin's Java runs under this app's targetSdk, and a targetSdk of R+
+        // makes LocationManager.addGpsStatusListener throw UnsupportedOperationException, which
+        // crashes the old Niantic location provider the moment it starts. The 2016 client targets
+        // 23 and is unaffected; this keeps the guest on the legacy behavior it expects.
+        targetSdk = 30
         versionCode = 1
         versionName = "0.1.0"
         ndk { abiFilters += "arm64-v8a" }
