@@ -594,6 +594,47 @@ bool zbgl_manual_glGetUniformLocation(HostGl& host, HostGl::Call& call) {
     return true;
 }
 
+constexpr GLenum kGlExtensions = 0x1F03;
+
+// Extensions a real driver advertises whose entry points ZettaBridge cannot serve. A guest that
+// resolves one through eglGetProcAddress gets NULL, and Unity calls what is advertised without
+// checking for NULL, so the next call is a null jump (Adreno advertises GL_OES_texture_3D and
+// calls glTexImage3DOES; SwiftShader does not, so the emulator never crashed). Dropping them from
+// GL_EXTENSIONS makes the guest take the path it would on a driver without them.
+constexpr const char* kUnsupportedExtensions[] = {
+    "GL_OES_texture_3D",
+    "GL_EXT_disjoint_timer_query",
+    "GL_OES_get_program_binary",
+    "GL_EXT_copy_image",
+    "GL_EXT_tessellation_shader",
+    "GL_KHR_blend_equation_advanced",
+    "GL_KHR_debug",
+};
+
+std::string without_unsupported_extensions(const std::string& extensions) {
+    std::string filtered;
+    std::size_t start = 0;
+    while (start < extensions.size()) {
+        const std::size_t end = extensions.find(' ', start);
+        const std::string token =
+            extensions.substr(start, end == std::string::npos ? std::string::npos : end - start);
+        bool drop = false;
+        for (const char* unsupported : kUnsupportedExtensions) {
+            if (token == unsupported) {
+                drop = true;
+                break;
+            }
+        }
+        if (!drop && !token.empty()) {
+            if (!filtered.empty()) filtered.push_back(' ');
+            filtered += token;
+        }
+        if (end == std::string::npos) break;
+        start = end + 1;
+    }
+    return filtered;
+}
+
 bool zbgl_manual_glGetString(HostGl& host, HostGl::Call& call) {
     const GLenum name = call.scalar<GLenum>(0);
     GlThreadState& current = state(host);
@@ -610,18 +651,20 @@ bool zbgl_manual_glGetString(HostGl& host, HostGl::Call& call) {
         host.reject(call, kGlInvalidOperation, "driver string exceeds 64 MiB");
         return true;
     }
-    const auto address = host.allocate_guest(length + 1);
+    std::string text(reinterpret_cast<const char*>(source), length);
+    if (name == kGlExtensions) text = without_unsupported_extensions(text);
+    const auto address = host.allocate_guest(text.size() + 1);
     if (!address) {
         host.reject(call, kGlOutOfMemory, "guest allocation for driver string failed");
         return true;
     }
     std::uint8_t* destination = host.runtime().memory().host_ptr(
-        *address, length + 1, kPageRead | kPageWrite);
+        *address, text.size() + 1, kPageRead | kPageWrite);
     if (destination == nullptr) {
         host.reject(call, kGlInvalidOperation, "guest allocator returned an unreadable buffer");
         return true;
     }
-    std::memcpy(destination, source, length + 1);
+    std::memcpy(destination, text.c_str(), text.size() + 1);
     current.strings[name] = *address;
     call.set_result(*address);
     return true;
@@ -1419,6 +1462,86 @@ bool zbgl_manual_glGetSynciv(HostGl& host, HostGl::Call& call) {
     GLint* values = call.pointer<GLint>(4, call.length(count), kPageRead | kPageWrite);
     if (!call.valid()) return true;
     host.backend().glGetSynciv(sync, pname, count, length, values);
+    return true;
+}
+
+// GL_KHR_debug / GL_EXT_debug_marker strings: length < 0 means a NUL-terminated string, length
+// >= 0 measures exactly that many bytes. The driver reads the string only during the call and
+// guest memory is host memory, so a bounds-checked guest pointer is handed over.
+const GLchar* guest_debug_string(HostGl& host, HostGl::Call& call, std::uint32_t address,
+                                 GLsizei length) {
+    if (length == 0) return "";
+    if (length < 0) return guest_string(host, call, address);
+    if (address == 0) {
+        call.fail(kGlInvalidValue, "string pointer is null");
+        return nullptr;
+    }
+    const std::uint8_t* data =
+        host.runtime().memory().host_ptr(address, static_cast<std::uint64_t>(length), kPageRead);
+    if (data == nullptr) {
+        call.fail(kGlInvalidValue, "string range is unreadable");
+        return nullptr;
+    }
+    return reinterpret_cast<const GLchar*>(data);
+}
+
+bool zbgl_manual_glDebugMessageControlKHR(HostGl& host, HostGl::Call& call) {
+    const GLenum source = call.scalar<GLenum>(0);
+    const GLenum type = call.scalar<GLenum>(1);
+    const GLenum severity = call.scalar<GLenum>(2);
+    const GLsizei count = call.scalar<GLsizei>(3);
+    const GLuint* ids = nullptr;
+    if (count > 0) {
+        ids = call.pointer<const GLuint>(4, call.length(count), kPageRead);
+        if (!call.valid()) return true;
+    }
+    const GLboolean enabled = call.scalar<GLboolean>(5);
+    host.backend().glDebugMessageControlKHR(source, type, severity, count, ids, enabled);
+    return true;
+}
+
+bool zbgl_manual_glDebugMessageInsertKHR(HostGl& host, HostGl::Call& call) {
+    const GLenum source = call.scalar<GLenum>(0);
+    const GLenum type = call.scalar<GLenum>(1);
+    const GLuint id = call.scalar<GLuint>(2);
+    const GLenum severity = call.scalar<GLenum>(3);
+    const GLsizei length = call.scalar<GLsizei>(4);
+    const GLchar* buf = guest_debug_string(host, call, call.arg(5), length);
+    if (call.valid()) host.backend().glDebugMessageInsertKHR(source, type, id, severity, length, buf);
+    return true;
+}
+
+bool zbgl_manual_glPushDebugGroupKHR(HostGl& host, HostGl::Call& call) {
+    const GLenum source = call.scalar<GLenum>(0);
+    const GLuint id = call.scalar<GLuint>(1);
+    const GLsizei length = call.scalar<GLsizei>(2);
+    const GLchar* message = guest_debug_string(host, call, call.arg(3), length);
+    if (call.valid()) host.backend().glPushDebugGroupKHR(source, id, length, message);
+    return true;
+}
+
+bool zbgl_manual_glObjectLabelKHR(HostGl& host, HostGl::Call& call) {
+    const GLenum identifier = call.scalar<GLenum>(0);
+    const GLuint name = call.scalar<GLuint>(1);
+    const GLsizei length = call.scalar<GLsizei>(2);
+    const GLchar* label = guest_debug_string(host, call, call.arg(3), length);
+    if (call.valid()) host.backend().glObjectLabelKHR(identifier, name, length, label);
+    return true;
+}
+
+bool zbgl_manual_glLabelObjectEXT(HostGl& host, HostGl::Call& call) {
+    const GLenum type = call.scalar<GLenum>(0);
+    const GLuint object = call.scalar<GLuint>(1);
+    const GLsizei length = call.scalar<GLsizei>(2);
+    const GLchar* label = guest_debug_string(host, call, call.arg(3), length);
+    if (call.valid()) host.backend().glLabelObjectEXT(type, object, length, label);
+    return true;
+}
+
+bool zbgl_manual_glPushGroupMarkerEXT(HostGl& host, HostGl::Call& call) {
+    const GLsizei length = call.scalar<GLsizei>(0);
+    const GLchar* marker = guest_debug_string(host, call, call.arg(1), length);
+    if (call.valid()) host.backend().glPushGroupMarkerEXT(length, marker);
     return true;
 }
 

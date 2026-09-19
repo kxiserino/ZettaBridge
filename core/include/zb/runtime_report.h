@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -59,6 +60,11 @@ public:
     NativeCallCounter& native_call_counter(const std::string& name);
     // The first reason wins: a crash report says more than the exit status that follows it.
     void note_guest_exit(const std::string& reason);
+
+    // A per-syscall-number census (diagnostics only), so the report can name a guest syscall spin
+    // that burns kernel time. Lock-free relaxed add on the hot path.
+    static constexpr std::size_t kMaxSyscallNumbers = 512;
+    void note_syscall(std::uint32_t number);
 
     // Guest file opens worth knowing about (did the guest find its .so/.dat/.bin payloads and
     // flutter_assets): the most recent kMaxOpenedPaths distinct paths successfully opened that
@@ -168,6 +174,7 @@ private:
     std::size_t onload_total_ = 0;
     std::uint64_t registered_natives_ = 0;
     std::string exit_reason_;
+    std::array<std::atomic<std::uint64_t>, kMaxSyscallNumbers> syscall_counts_{};
 
     struct NativeCallEntry {
         std::string name;

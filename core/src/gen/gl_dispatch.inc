@@ -1820,6 +1820,54 @@ bool HostGl::dispatch(Call& call) {
         backend_.glTexStorage3DEXT(target, levels, internalformat, width, height, depth);
         return true;
     }
+    case ZB_GL_HC_glDebugMessageControlKHR: {
+        return zbgl_manual_glDebugMessageControlKHR(*this, call);
+    }
+    case ZB_GL_HC_glDebugMessageInsertKHR: {
+        return zbgl_manual_glDebugMessageInsertKHR(*this, call);
+    }
+    case ZB_GL_HC_glPushDebugGroupKHR: {
+        return zbgl_manual_glPushDebugGroupKHR(*this, call);
+    }
+    case ZB_GL_HC_glPopDebugGroupKHR: {
+        if (!call.valid()) return true;
+        backend_.glPopDebugGroupKHR();
+        return true;
+    }
+    case ZB_GL_HC_glObjectLabelKHR: {
+        return zbgl_manual_glObjectLabelKHR(*this, call);
+    }
+    case ZB_GL_HC_glGetObjectLabelKHR: {
+        const GLenum identifier = call.scalar<GLenum>(0);
+        const GLuint name = call.scalar<GLuint>(1);
+        const GLsizei bufSize = call.scalar<GLsizei>(2);
+        GLsizei * length = call.pointer<GLsizei>(3, 1u, kPageRead | kPageWrite);
+        GLchar * label = call.pointer<GLchar>(4, call.length(bufSize, 1u), kPageRead | kPageWrite);
+        if (!call.valid()) return true;
+        backend_.glGetObjectLabelKHR(identifier, name, bufSize, length, label);
+        return true;
+    }
+    case ZB_GL_HC_glPushGroupMarkerEXT: {
+        return zbgl_manual_glPushGroupMarkerEXT(*this, call);
+    }
+    case ZB_GL_HC_glPopGroupMarkerEXT: {
+        if (!call.valid()) return true;
+        backend_.glPopGroupMarkerEXT();
+        return true;
+    }
+    case ZB_GL_HC_glLabelObjectEXT: {
+        return zbgl_manual_glLabelObjectEXT(*this, call);
+    }
+    case ZB_GL_HC_glGetObjectLabelEXT: {
+        const GLenum type = call.scalar<GLenum>(0);
+        const GLuint object = call.scalar<GLuint>(1);
+        const GLsizei bufSize = call.scalar<GLsizei>(2);
+        GLsizei * length = call.pointer<GLsizei>(3, 1u, kPageRead | kPageWrite);
+        GLchar * label = call.pointer<GLchar>(4, call.length(bufSize, 1u), kPageRead | kPageWrite);
+        if (!call.valid()) return true;
+        backend_.glGetObjectLabelEXT(type, object, bufSize, length, label);
+        return true;
+    }
     default:
         return false;
     }

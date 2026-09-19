@@ -11,6 +11,7 @@
 #include <utility>
 
 #include "zb/log.h"
+#include "zb/syscalls.h"
 
 namespace zb {
 
@@ -195,6 +196,10 @@ void RuntimeReport::note_guest_exit(const std::string& reason) {
         observer = take_observer();
     }
     if (observer) (*observer)(true);
+}
+
+void RuntimeReport::note_syscall(std::uint32_t number) {
+    if (number < kMaxSyscallNumbers) syscall_counts_[number].fetch_add(1, std::memory_order_relaxed);
 }
 
 void RuntimeReport::note_gl_call(const char* function, std::uint64_t host_tid) {
@@ -506,6 +511,28 @@ std::string RuntimeReport::text() const {
     }
     if (distinct_host_calls_ > host_calls_.size()) {
         append_count(out, "unimplemented-more", distinct_host_calls_ - host_calls_.size());
+    }
+
+    {
+        std::vector<std::pair<std::uint32_t, std::uint64_t>> counts;
+        std::uint64_t total = 0;
+        for (std::uint32_t nr = 0; nr < kMaxSyscallNumbers; ++nr) {
+            const std::uint64_t n = syscall_counts_[nr].load(std::memory_order_relaxed);
+            if (n == 0) continue;
+            total += n;
+            counts.emplace_back(nr, n);
+        }
+        std::sort(counts.begin(), counts.end(),
+                  [](const auto& a, const auto& b) { return a.second > b.second; });
+        out += "syscalls:";
+        std::size_t shown = 0;
+        for (const auto& [nr, count] : counts) {
+            if (shown >= 8) break;
+            out += " " + std::string(syscall_name(nr)) + "=" + std::to_string(count);
+            ++shown;
+        }
+        if (shown == 0) out += " (none)";
+        out += " total=" + std::to_string(total) + '\n';
     }
 
     out += "guest-exit: ";

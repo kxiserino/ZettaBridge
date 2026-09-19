@@ -822,6 +822,36 @@ public:
     virtual void glTexStorage3DEXT(GLenum target, GLsizei levels, GLenum internalformat, GLsizei width, GLsizei height, GLsizei depth) {
         (void)invoke("glTexStorage3DEXT", {gl_backend_word(target), gl_backend_word(levels), gl_backend_word(internalformat), gl_backend_word(width), gl_backend_word(height), gl_backend_word(depth)});
     }
+    virtual void glDebugMessageControlKHR(GLenum source, GLenum type, GLenum severity, GLsizei count, const GLuint *ids, GLboolean enabled) {
+        (void)invoke("glDebugMessageControlKHR", {gl_backend_word(source), gl_backend_word(type), gl_backend_word(severity), gl_backend_word(count), gl_backend_word(ids), gl_backend_word(enabled)});
+    }
+    virtual void glDebugMessageInsertKHR(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar *buf) {
+        (void)invoke("glDebugMessageInsertKHR", {gl_backend_word(source), gl_backend_word(type), gl_backend_word(id), gl_backend_word(severity), gl_backend_word(length), gl_backend_word(buf)});
+    }
+    virtual void glPushDebugGroupKHR(GLenum source, GLuint id, GLsizei length, const GLchar *message) {
+        (void)invoke("glPushDebugGroupKHR", {gl_backend_word(source), gl_backend_word(id), gl_backend_word(length), gl_backend_word(message)});
+    }
+    virtual void glPopDebugGroupKHR(void) {
+        (void)invoke("glPopDebugGroupKHR", {});
+    }
+    virtual void glObjectLabelKHR(GLenum identifier, GLuint name, GLsizei length, const GLchar *label) {
+        (void)invoke("glObjectLabelKHR", {gl_backend_word(identifier), gl_backend_word(name), gl_backend_word(length), gl_backend_word(label)});
+    }
+    virtual void glGetObjectLabelKHR(GLenum identifier, GLuint name, GLsizei bufSize, GLsizei *length, GLchar *label) {
+        (void)invoke("glGetObjectLabelKHR", {gl_backend_word(identifier), gl_backend_word(name), gl_backend_word(bufSize), gl_backend_word(length), gl_backend_word(label)});
+    }
+    virtual void glPushGroupMarkerEXT(GLsizei length, const GLchar *marker) {
+        (void)invoke("glPushGroupMarkerEXT", {gl_backend_word(length), gl_backend_word(marker)});
+    }
+    virtual void glPopGroupMarkerEXT(void) {
+        (void)invoke("glPopGroupMarkerEXT", {});
+    }
+    virtual void glLabelObjectEXT(GLenum type, GLuint object, GLsizei length, const GLchar *label) {
+        (void)invoke("glLabelObjectEXT", {gl_backend_word(type), gl_backend_word(object), gl_backend_word(length), gl_backend_word(label)});
+    }
+    virtual void glGetObjectLabelEXT(GLenum type, GLuint object, GLsizei bufSize, GLsizei *length, GLchar *label) {
+        (void)invoke("glGetObjectLabelEXT", {gl_backend_word(type), gl_backend_word(object), gl_backend_word(bufSize), gl_backend_word(length), gl_backend_word(label)});
+    }
 
 protected:
     virtual std::uint64_t invoke(const char* name,

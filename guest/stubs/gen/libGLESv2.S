@@ -2074,3 +2074,83 @@ glTexStorage3DEXT:
     svc #0x5a0157
     bx lr
 .size glTexStorage3DEXT, . - glTexStorage3DEXT
+
+.global glDebugMessageControlKHR
+.type glDebugMessageControlKHR, %function
+.p2align 2
+glDebugMessageControlKHR:
+    svc #0x5a0158
+    bx lr
+.size glDebugMessageControlKHR, . - glDebugMessageControlKHR
+
+.global glDebugMessageInsertKHR
+.type glDebugMessageInsertKHR, %function
+.p2align 2
+glDebugMessageInsertKHR:
+    svc #0x5a0159
+    bx lr
+.size glDebugMessageInsertKHR, . - glDebugMessageInsertKHR
+
+.global glPushDebugGroupKHR
+.type glPushDebugGroupKHR, %function
+.p2align 2
+glPushDebugGroupKHR:
+    svc #0x5a015a
+    bx lr
+.size glPushDebugGroupKHR, . - glPushDebugGroupKHR
+
+.global glPopDebugGroupKHR
+.type glPopDebugGroupKHR, %function
+.p2align 2
+glPopDebugGroupKHR:
+    svc #0x5a015b
+    bx lr
+.size glPopDebugGroupKHR, . - glPopDebugGroupKHR
+
+.global glObjectLabelKHR
+.type glObjectLabelKHR, %function
+.p2align 2
+glObjectLabelKHR:
+    svc #0x5a015c
+    bx lr
+.size glObjectLabelKHR, . - glObjectLabelKHR
+
+.global glGetObjectLabelKHR
+.type glGetObjectLabelKHR, %function
+.p2align 2
+glGetObjectLabelKHR:
+    svc #0x5a015d
+    bx lr
+.size glGetObjectLabelKHR, . - glGetObjectLabelKHR
+
+.global glPushGroupMarkerEXT
+.type glPushGroupMarkerEXT, %function
+.p2align 2
+glPushGroupMarkerEXT:
+    svc #0x5a015e
+    bx lr
+.size glPushGroupMarkerEXT, . - glPushGroupMarkerEXT
+
+.global glPopGroupMarkerEXT
+.type glPopGroupMarkerEXT, %function
+.p2align 2
+glPopGroupMarkerEXT:
+    svc #0x5a015f
+    bx lr
+.size glPopGroupMarkerEXT, . - glPopGroupMarkerEXT
+
+.global glLabelObjectEXT
+.type glLabelObjectEXT, %function
+.p2align 2
+glLabelObjectEXT:
+    svc #0x5a0160
+    bx lr
+.size glLabelObjectEXT, . - glLabelObjectEXT
+
+.global glGetObjectLabelEXT
+.type glGetObjectLabelEXT, %function
+.p2align 2
+glGetObjectLabelEXT:
+    svc #0x5a0161
+    bx lr
+.size glGetObjectLabelEXT, . - glGetObjectLabelEXT
