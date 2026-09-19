@@ -6,6 +6,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "zb/guest_thread.h"
 #include "zb/jni_backend.h"
@@ -50,6 +51,10 @@ public:
     bool ready() const;
     // The guest JavaVM*, valid when ready().
     std::uint32_t guest_java_vm() const;
+    // Distinct paths of the shared libraries currently mapped in the guest. The JNI loader uses
+    // this to bind Java_* exports of libraries a guest dlopen'd directly, since ART resolves a
+    // native method against the library Java loaded, not against whatever the library loads.
+    std::vector<std::string> loaded_guest_libraries() const;
 
     // The host JNIEnv of the calling thread's current JNI transition (call_native or a guest JNI
     // host call reached from one), or 0 outside one. Lets another host-call dispatcher (HostAssets)

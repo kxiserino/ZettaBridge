@@ -489,6 +489,14 @@ GuestMemory& LibraryRuntime::memory() {
     return impl_->process.memory();
 }
 
+Process& LibraryRuntime::process() {
+    return impl_->process;
+}
+
+const Process& LibraryRuntime::process() const {
+    return impl_->process;
+}
+
 const zb_service_api& LibraryRuntime::service_api() const {
     return impl_->api;
 }

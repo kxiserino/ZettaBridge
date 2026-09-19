@@ -18,6 +18,7 @@
 #include <iterator>
 #include <string_view>
 #include <thread>
+#include <unordered_set>
 
 #include <dynarmic/interface/exclusive_monitor.h>
 
@@ -220,6 +221,16 @@ std::string Process::describe_address(std::uint32_t addr) const {
         }
     }
     return "?";
+}
+
+std::vector<std::string> Process::mapped_library_paths() const {
+    std::vector<std::string> paths;
+    std::unordered_set<std::string> seen;
+    for (const FileMapping& mapping : file_mappings_) {
+        if (!mapping.path.ends_with(".so")) continue;
+        if (seen.insert(mapping.path).second) paths.push_back(mapping.path);
+    }
+    return paths;
 }
 
 std::string Process::describe_thread_stack(std::int32_t tid) const {

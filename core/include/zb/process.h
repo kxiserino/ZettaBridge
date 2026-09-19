@@ -151,6 +151,10 @@ public:
     void forget_mappings(std::uint32_t start, std::uint64_t length);
     // "libc.so offset 0x1234" style description, or "?" if the address is not file-backed.
     std::string describe_address(std::uint32_t addr) const;
+    // Distinct paths of the shared libraries currently mapped in the guest, in first-mapped
+    // order. Used by the JNI loader to bind the Java_* exports of libraries a guest dlopen'd
+    // directly (not through System.loadLibrary, which the proxy already routes through the loader).
+    std::vector<std::string> mapped_library_paths() const;
     // Diagnostics-only guest backtrace for a thread by host tid: its pc/lr plus the stack words
     // that name a known file mapping. Used by the hang watchdog; never changes guest state.
     std::string describe_thread_stack(std::int32_t tid) const;

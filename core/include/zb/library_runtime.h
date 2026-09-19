@@ -59,6 +59,9 @@ public:
     std::unique_ptr<Carrier> borrow(std::string& error);
 
     GuestMemory& memory();
+    // The guest process this runtime runs. Valid after a successful start().
+    Process& process();
+    const Process& process() const;
     // Valid after a successful start().
     const zb_service_api& service_api() const;
     // Real guest pthreads (service, carriers, guest-created threads); borrowers are not counted.

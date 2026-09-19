@@ -5,6 +5,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_set>
+#include <vector>
 
 #include "zb/jni_backend.h"
 
@@ -38,11 +39,23 @@ private:
     void log_unresolvable_once(const std::string& symbol, const std::string& name);
     void log_unmatched_once(const std::string& symbol);
 
+    // Binds the Java_* exports in `exports` of an already guest-dlopened `handle`. Returns false,
+    // with `error` set, only on a hard JNI failure; per-export skips are counted, not fatal.
+    bool bind_exports(JniBackend::Env env, const std::string& path, std::uint32_t handle,
+                      const std::vector<std::string>& exports, std::size_t& bound_methods,
+                      std::size_t& skipped_classes, std::size_t& skipped_exports, std::string& error);
+    // Binds the Java_* exports of libraries the guest loaded itself (a JNI_OnLoad that dlopens a
+    // companion, or any guest dlopen), which never pass through load(). Called after each load()
+    // so a companion loaded during JNI_OnLoad is bound in the same call.
+    void bind_guest_loaded(JniBackend::Env env);
+
     HostJni& host_jni_;
     JniBackend& backend_;
     std::mutex missing_mutex_;
     std::unordered_set<std::string> missing_classes_;
     std::unordered_set<std::string> unresolvable_exports_;
+    // Guest library paths whose Java_* exports have already been through bind_exports.
+    std::unordered_set<std::string> bound_libraries_;
 };
 
 }  // namespace zb
