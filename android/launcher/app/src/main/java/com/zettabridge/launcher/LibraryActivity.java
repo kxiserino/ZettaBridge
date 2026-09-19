@@ -1,10 +1,12 @@
 package com.zettabridge.launcher;
 
+import android.Manifest;
 import android.app.Activity;
 import android.app.ActivityManager;
 import android.app.AlertDialog;
 import android.content.ComponentName;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.content.pm.ShortcutInfo;
 import android.content.pm.ShortcutManager;
 import android.graphics.Bitmap;
@@ -44,6 +46,7 @@ public class LibraryActivity extends Activity {
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
+        requestLocationPermission();
         int pad = dp(16);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -356,6 +359,15 @@ public class LibraryActivity extends Activity {
         for (ActivityManager.RunningAppProcessInfo proc : am.getRunningAppProcesses()) {
             if (proc.processName.endsWith(ZbApplication.GUEST_SUFFIX)) android.os.Process.killProcess(proc.pid);
         }
+    }
+
+    /** Location-based plugins read the host LocationManager; ask once on the library screen. */
+    private void requestLocationPermission() {
+        if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+            return;
+        }
+        requestPermissions(new String[] {Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION}, 1);
     }
 
     private int dp(int value) {
