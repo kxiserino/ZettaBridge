@@ -14,13 +14,18 @@ public final class DeepLinkActivity extends Activity {
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
-        if (!GuestRuntime.get().handleDeepLink(this)) finish();
+        GuestRuntime.get().handleDeepLink(this);
+        // A Theme.NoDisplay activity must finish before onResume completes or the framework throws
+        // IllegalStateException and kills the process, taking the auth callback with it. The
+        // forwarded startActivity is asynchronous, so finishing here does not cancel it.
+        finish();
     }
 
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
-        if (!GuestRuntime.get().handleDeepLink(this)) finish();
+        GuestRuntime.get().handleDeepLink(this);
+        finish();
     }
 }
