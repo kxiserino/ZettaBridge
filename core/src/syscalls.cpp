@@ -581,37 +581,6 @@ std::int32_t sys_uname(Ctx& c) {
     return write_guest(c.mem, c.a[0], u) ? 0 : -EFAULT;
 }
 
-timespec ts_add(timespec a, timespec b) {
-    a.tv_sec += b.tv_sec;
-    a.tv_nsec += b.tv_nsec;
-    if (a.tv_nsec >= 1000000000L) {
-        a.tv_nsec -= 1000000000L;
-        ++a.tv_sec;
-    }
-    return a;
-}
-
-timespec ts_sub(timespec a, timespec b) {
-    a.tv_sec -= b.tv_sec;
-    a.tv_nsec -= b.tv_nsec;
-    if (a.tv_nsec < 0) {
-        a.tv_nsec += 1000000000L;
-        --a.tv_sec;
-    }
-    return a;
-}
-
-bool ts_positive(timespec t) { return t.tv_sec > 0 || (t.tv_sec == 0 && t.tv_nsec > 0); }
-
-// A blocking guest futex is bounded so a guest signal posted to this thread is observed: the wait
-// is retried, and if a deliverable signal is pending it returns -EINTR. Without this a guest
-// thread blocked in FUTEX_WAIT never returns to the stop dispatcher, so Process::after_stop never
-// delivers the signal. Boehm GC (IL2CPP) suspends threads with SIGPWR this way, so a missed
-// delivery deadlocks its stop-the-world handshake. The kernel re-checks the futex word on every
-// retry, so the observable futex semantics are unchanged; only latency to a signal (<= one poll)
-// and idle wakeups change.
-constexpr timespec kFutexSignalPoll{0, 25 * 1000 * 1000};  // 25 ms
-
 std::int32_t sys_futex(Ctx& c, bool time64) {
     const int op = static_cast<int>(c.a[1]);
     const int cmd = op & FUTEX_CMD_MASK;
@@ -620,54 +589,20 @@ std::int32_t sys_futex(Ctx& c, bool time64) {
     switch (cmd) {
     case FUTEX_WAIT:
     case FUTEX_WAIT_BITSET: {
-        // Always wait with a relative host timeout: FUTEX_CLOCK_REALTIME is cleared from the host
-        // op and the guest's (possibly absolute) deadline is honoured by the loop instead.
-        const int host_op = op & ~FUTEX_CLOCK_REALTIME;
-        bool has_deadline = false;
-        clockid_t wait_clock = CLOCK_MONOTONIC;
-        timespec deadline{};
+        timespec ts;
+        timespec* tsp = nullptr;
         if (c.a[3] != 0) {
-            timespec guest{};
-            if (!read_timespec(c.mem, c.a[3], time64, guest)) return -EFAULT;
-            has_deadline = true;
-            if (cmd == FUTEX_WAIT_BITSET && (op & FUTEX_CLOCK_REALTIME) != 0) {
-                wait_clock = CLOCK_REALTIME;
-                deadline = guest;
-            } else {
-                timespec now{};
-                clock_gettime(wait_clock, &now);
-                deadline = ts_add(now, guest);
-            }
+            if (!read_timespec(c.mem, c.a[3], time64, ts)) return -EFAULT;
+            tsp = &ts;
         }
         // Logged before blocking: the generic trace below only reports calls that returned, so a
         // hang would otherwise leave the stuck wait invisible.
         if (trace_enabled()) log("futex wait uaddr=0x%x op=0x%x val=0x%x tid=%d", c.a[0], op, c.a[2], c.thread.tid);
-        for (;;) {
-            if (c.thread.has_pending_signals(c.thread.sigmask)) return -EINTR;
-            timespec host_timeout{};
-            if (has_deadline) {
-                timespec now{};
-                clock_gettime(wait_clock, &now);
-                const timespec remaining = ts_sub(deadline, now);
-                if (!ts_positive(remaining)) return -ETIMEDOUT;
-                host_timeout = ts_positive(ts_sub(remaining, kFutexSignalPoll)) ? kFutexSignalPoll
-                                                                               : remaining;
-            } else {
-                host_timeout = kFutexSignalPoll;
-            }
-            const long result =
-                ::syscall(SYS_futex, uaddr, host_op, c.a[2], &host_timeout, nullptr, c.a[5]);
-            if (result == 0) return 0;
-            if (errno == EAGAIN) return -EAGAIN;
-            if (errno == EINTR) continue;
-            if (errno != ETIMEDOUT) return -errno;
-            // A short poll just elapsed; a real guest timeout is reported only once it is over.
-            if (has_deadline) {
-                timespec now{};
-                clock_gettime(wait_clock, &now);
-                if (!ts_positive(ts_sub(deadline, now))) return -ETIMEDOUT;
-            }
-        }
+        // A guest signal posted to this thread sends kInterruptSignal to it, making this syscall
+        // return EINTR so the stop dispatcher can deliver it. No host timeout is added: polling
+        // every wait with one programmed an hrtimer per wait and made the kernel timer path the
+        // phone's hotspot.
+        return result_of(::syscall(SYS_futex, uaddr, op, c.a[2], tsp, nullptr, c.a[5]));
     }
     case FUTEX_WAKE:
     case FUTEX_WAKE_BITSET:

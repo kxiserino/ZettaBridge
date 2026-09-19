@@ -23,6 +23,12 @@ namespace zb {
 
 class Cp15;
 
+// Host signal used only to break a guest thread out of a blocking host syscall when a guest
+// signal is posted to it. The handler does nothing: the interrupted syscall returns EINTR and the
+// stop dispatcher then delivers the guest signal. Chosen outside ZettaBridge's forwarded set, the
+// kernel's reserved signals and ART's SigCgt.
+inline constexpr int kInterruptSignal = 40;
+
 // svc immediate used to return from a host->guest call.
 inline constexpr std::uint32_t kHostReturnSwi = 0x5AFFFF;
 inline constexpr std::uint32_t kHostReturnAddress = 0xFFFF0F00;
@@ -106,6 +112,9 @@ public:
     std::size_t child_code_cache_size = 0;
     // Host tid of the host thread running this guest thread.
     std::int32_t tid = 0;
+    // Host tid that post_signal() sends its interrupt signal to. It equals tid for a real guest
+    // pthread; for a borrower it is the borrowing host thread, which differs from the carrier tid.
+    std::int32_t host_tid = 0;
 
     std::uint8_t MemoryRead8(std::uint32_t vaddr) override;
     std::uint16_t MemoryRead16(std::uint32_t vaddr) override;

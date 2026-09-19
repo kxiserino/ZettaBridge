@@ -63,6 +63,10 @@ bool default_ignored(int sig) {
     return sig == SIGCHLD || sig == SIGCONT || sig == SIGURG || sig == SIGWINCH;
 }
 
+// kInterruptSignal's handler: it exists only so the kernel interrupts a blocking syscall
+// (no SA_RESTART) on a thread a guest signal is posted to. It must not forward anything.
+void interrupt_signal(int, siginfo_t*, void*) {}
+
 void forward_host_signal(int sig, siginfo_t* info, void*) {
     g::siginfo32 guest{};
     guest.si_signo = sig;
@@ -133,6 +137,14 @@ void Process::install_host_signal_forwarding() {
     sa.sa_flags = SA_SIGINFO;  // no SA_RESTART: blocked host syscalls return EINTR to the guest
     sigemptyset(&sa.sa_mask);
     for (int sig : kForwardedHostSignals) sigaction(sig, &sa, nullptr);
+    // The guest-signal interrupt: a no-op handler, no SA_RESTART, so a blocking host syscall
+    // returns EINTR and the guest thread reaches the stop dispatcher.
+    struct sigaction interrupt;
+    std::memset(&interrupt, 0, sizeof interrupt);
+    interrupt.sa_sigaction = interrupt_signal;
+    interrupt.sa_flags = SA_SIGINFO;
+    sigemptyset(&interrupt.sa_mask);
+    sigaction(kInterruptSignal, &interrupt, nullptr);
 }
 
 bool Process::dispatch_pending_signals(GuestThread& thread) {

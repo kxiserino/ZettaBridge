@@ -385,6 +385,7 @@ std::unique_ptr<GuestThread> Process::create_borrower(GuestThread& carrier) {
     borrower->set_fpscr(carrier.fpscr());
     borrower->set_tls(carrier.tls());
     borrower->tid = carrier.tid;
+    borrower->host_tid = static_cast<std::int32_t>(::syscall(SYS_gettid));
     borrower->sigmask = carrier.sigmask;
     borrower->altstack = carrier.altstack;
     std::lock_guard<std::mutex> lock(threads_mutex_);
@@ -494,6 +495,7 @@ int Process::run(const std::string& path, const std::vector<std::string>& argv, 
     regs[15] = start_pc & ~1u;
     main_->set_cpsr(kCpsrUserMode | ((start_pc & 1) ? kCpsrThumb : 0));
     main_->tid = static_cast<std::int32_t>(::syscall(SYS_gettid));
+    main_->host_tid = main_->tid;
     register_thread(main_.get());
     set_process_signal_target(main_.get());
     install_host_signal_forwarding();
@@ -627,6 +629,7 @@ std::int32_t Process::clone_thread(GuestThread& parent, std::uint32_t flags, std
     std::thread([this, owned = std::move(child), promise = &tid_promise, flags, child_tid_addr]() mutable {
         const auto tid = static_cast<pid_t>(::syscall(SYS_gettid));
         owned->tid = tid;
+        owned->host_tid = static_cast<std::int32_t>(tid);
         if (flags & kCloneChildSetTid) write_guest_u32(mem_, child_tid_addr, static_cast<std::uint32_t>(tid));
         promise->set_value(tid);
         thread_main(std::move(owned));

@@ -170,6 +170,11 @@ void GuestThread::post_signal(const g::siginfo32& info) {
     pending_signals_.fetch_or(1ULL << (sig - 1));
     jit_->HaltExecution(kInterruptHalt);
     wake();
+    // Break a blocking host syscall (a guest futex wait, read or poll) so the thread reaches the
+    // stop dispatcher and takes the signal. Polling every futex wait with a timeout instead woke
+    // every blocked thread 40 times a second and made the kernel's timer path the hotspot.
+    // Async-signal-safe: post_signal can run inside a host signal handler.
+    if (host_tid > 0) ::syscall(SYS_tgkill, ::getpid(), host_tid, kInterruptSignal);
 }
 
 void GuestThread::park(std::uint32_t token) {
