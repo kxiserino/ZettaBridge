@@ -113,6 +113,26 @@ std::vector<ThreadActivitySample> snapshot_thread_activity() {
 // What the kernel says about a thread: "gone" when it no longer exists, otherwise its scheduler
 // state (R running, S sleeping, D uninterruptible), the CPU ticks it burned, and the kernel
 // function it is waiting in. Zero CPU alone cannot tell an idle thread from a dead one.
+// utime+stime ticks of a thread, or 0. Used to pick the busiest thread for a backtrace.
+std::uint64_t thread_cpu_ticks(std::int32_t tid) {
+    char path[64];
+    std::snprintf(path, sizeof path, "/proc/self/task/%d/stat", tid);
+    std::FILE* file = std::fopen(path, "re");
+    if (file == nullptr) return 0;
+    char line[1024];
+    const char* read = std::fgets(line, sizeof line, file);
+    std::fclose(file);
+    if (read == nullptr) return 0;
+    const char* cursor = std::strrchr(line, ')');
+    if (cursor == nullptr) return 0;
+    unsigned long long utime = 0, stime = 0;
+    if (std::sscanf(cursor + 2, "%*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %llu %llu", &utime,
+                    &stime) != 2) {
+        return 0;
+    }
+    return utime + stime;
+}
+
 std::string thread_kernel_state(std::int32_t tid) {
     char path[64];
     std::snprintf(path, sizeof path, "/proc/self/task/%d/stat", tid);
@@ -313,6 +333,28 @@ bool HangWatchdog::sample(Clock::time_point now) {
             if (stack.empty()) continue;
             runtime_report().note_watch_detail("stack-" + std::to_string(state->tid), stack);
             ++stacks;
+        }
+        // A thread that keeps calling out (its activity counter changes, so it is never "stuck")
+        // but never reaches the renderer is invisible to the stuck list. Record the busiest few
+        // threads' backtraces too, so a client-side wait loop can be named.
+        static std::atomic<int> busy_notes{0};
+        if (busy_notes.load(std::memory_order_relaxed) < 4 && !previous_.empty()) {
+            const State* busiest = nullptr;
+            std::uint64_t best = 0;
+            for (const State& state : previous_) {
+                const std::uint64_t ticks = thread_cpu_ticks(state.tid);
+                if (ticks > best) {
+                    best = ticks;
+                    busiest = &state;
+                }
+            }
+            if (busiest != nullptr) {
+                const std::string stack = reporter(busiest->tid);
+                if (!stack.empty()) {
+                    busy_notes.fetch_add(1, std::memory_order_relaxed);
+                    runtime_report().note_watch_detail("busy-" + std::to_string(busiest->tid), stack);
+                }
+            }
         }
     }
 
