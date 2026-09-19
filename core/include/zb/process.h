@@ -42,6 +42,8 @@ public:
 
     // Host directory holding the arm32 Android system files (system/bin/linker, system/lib/...).
     void set_sysroot(std::string dir) { sysroot_ = std::move(dir); }
+    // Canonical directory, set before run(): guest loaders need ARM32 files, not ART's proxies.
+    void set_plugin_root(std::string dir) { plugin_root_ = std::move(dir); }
     // See GuestThread: precise memory faults at a speed cost. Defaults to $ZB_PRECISE_FAULTS.
     void set_precise_faults(bool enabled) { precise_faults_ = enabled; }
 
@@ -124,7 +126,8 @@ public:
     std::mutex& signal_mutex() { return signal_mutex_; }
 
     // Maps absolute guest paths of the Android system (/system, /apex, /vendor, ...) into the
-    // sysroot, and /proc/self/exe to the guest executable. Other paths are returned unchanged.
+    // sysroot, /proc/self/exe to the guest executable, and this plugin's ART proxies to ARM32
+    // libraries. Other paths are returned unchanged.
     std::string translate_path(const char* guest_path) const;
     // Host path of the guest executable, as reported by /proc/self/exe.
     const std::string& exe_path() const { return exe_path_; }
@@ -210,6 +213,7 @@ private:
     std::vector<FileMapping> file_mappings_;
     std::vector<std::pair<std::uint32_t, std::uint32_t>> textrel_ranges_;
     std::string sysroot_;
+    std::string plugin_root_;
     std::string exe_path_;
     bool precise_faults_ = false;
     std::uint32_t initial_sp_ = 0;

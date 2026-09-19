@@ -19,6 +19,7 @@ namespace zb {
 struct LibraryRuntimeOptions {
     std::string zbhost;   // host path of the arm32 zbhost executable
     std::string sysroot;  // host directory with the arm32 system files
+    std::string plugin_root;  // canonical plugin directory; empty for standalone guests
     std::uint32_t target_sdk = 0;
     std::vector<std::string> guest_environment;  // guest environment, e.g. LD_LIBRARY_PATH=...
     std::string preload;            // guest path dlopen'ed RTLD_GLOBAL before READY; empty: none

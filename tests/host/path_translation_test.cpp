@@ -38,6 +38,39 @@ int main() {
     CHECK(process.translate_path("/data/data/com.example/files/thing.ttf") ==
           std::string("/data/data/com.example/files/thing.ttf"));
 
+    // ClassLoader.findLibrary returns a host proxy to ART. A guest dlopen of that same
+    // path must resolve to its ARM32 counterpart, including Android's /data/user alias.
+    fs::create_directories(root / "plugin/proxy");
+    fs::create_directories(root / "plugin/lib");
+    const fs::path proxy = root / "plugin/proxy/libgame.so";
+    library = std::fopen(proxy.c_str(), "w");
+    CHECK(library != nullptr);
+    std::fputs("host proxy", library);
+    std::fclose(library);
+    fs::create_directory_symlink(root / "plugin", root / "alias");
+    CHECK(process.translate_path(proxy.c_str()) == proxy.string());
+    process.set_plugin_root(fs::canonical(root / "plugin").string());
+    const std::string guest = (fs::canonical(root / "plugin") / "lib/libgame.so").string();
+    CHECK(process.translate_path(proxy.c_str()) == guest);
+    CHECK(process.translate_path((root / "alias/proxy/libgame.so").c_str()) == guest);
+    CHECK(process.translate_path((root / "plugin/lib/libgame.so").c_str()) ==
+          (root / "plugin/lib/libgame.so").string());
+    // No prefix collisions, non-library redirects, or redirects outside this plugin.
+    fs::create_directories(root / "other/proxy");
+    fs::copy_file(proxy, root / "other/proxy/libgame.so");
+    CHECK(process.translate_path((root / "other/proxy/libgame.so").c_str()) ==
+          (root / "other/proxy/libgame.so").string());
+    fs::create_directories(root / "plugin/proxy-other");
+    fs::copy_file(proxy, root / "plugin/proxy-other/libgame.so");
+    CHECK(process.translate_path((root / "plugin/proxy-other/libgame.so").c_str()) ==
+          (root / "plugin/proxy-other/libgame.so").string());
+    fs::create_symlink(root / "other/proxy/libgame.so", root / "plugin/proxy/outside.so");
+    CHECK(process.translate_path((root / "plugin/proxy/outside.so").c_str()) ==
+          (root / "plugin/proxy/outside.so").string());
+    fs::copy_file(proxy, root / "plugin/proxy/report.txt");
+    CHECK(process.translate_path((root / "plugin/proxy/report.txt").c_str()) ==
+          (root / "plugin/proxy/report.txt").string());
+
     fs::remove_all(root);
     std::puts("path_translation_test PASS");
     return 0;

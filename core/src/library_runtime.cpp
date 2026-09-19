@@ -369,6 +369,7 @@ bool LibraryRuntime::start(const LibraryRuntimeOptions& options, std::string& er
     }
     Impl* impl = impl_.get();
     impl->process.set_sysroot(options.sysroot);
+    impl->process.set_plugin_root(options.plugin_root);
     impl->process.set_host_call_handler(
         [impl](std::uint32_t index, GuestThread& thread) { return impl->handle_host_call(index, thread); });
     std::vector<std::string> argv = {options.zbhost, std::to_string(options.target_sdk)};

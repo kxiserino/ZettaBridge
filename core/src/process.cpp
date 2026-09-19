@@ -233,6 +233,20 @@ bool Process::overlaps_textrel_range(std::uint32_t start, std::uint64_t length) 
 std::string Process::translate_path(const char* guest_path) const {
     const std::string_view path(guest_path);
     if (path == "/proc/self/exe") return exe_path_;
+    // ART needs the ARM64 proxy returned by ClassLoader.findLibrary, but native guest
+    // callers (e.g. Unity loading IL2CPP) need the original ARM32 file at that path.
+    // Canonicalize to handle /data/user/0 vs /data/data without rewriting other apps.
+    if (!plugin_root_.empty() && path.ends_with(".so")) {
+        char resolved[PATH_MAX];
+        if (::realpath(guest_path, resolved) != nullptr) {
+            const std::string_view canonical(resolved);
+            const std::size_t slash = canonical.rfind('/');
+            if (slash != std::string_view::npos &&
+                canonical.substr(0, slash) == plugin_root_ + "/proxy") {
+                return plugin_root_ + "/lib/" + std::string(canonical.substr(slash + 1));
+            }
+        }
+    }
     if (!sysroot_.empty()) {
         for (const auto& m : kPathMappings) {
             if (path.substr(0, m.guest_prefix.size()) == m.guest_prefix) {

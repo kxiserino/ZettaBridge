@@ -13,18 +13,23 @@ public:
         last_env = env;
         last_surface = surface;
         auto* window = new int(static_cast<int>(++next_window_));
-        windows_[window] = true;
+        windows_[window] = 1;
         return window;
     }
 
     void acquire(void* window) override {
-        if (windows_.count(window)) ++acquired_;
+        auto it = windows_.find(window);
+        if (it != windows_.end()) { ++it->second; ++acquired_; }
     }
 
     void release(void* window) override {
-        if (windows_.erase(window) != 0) {
+        auto it = windows_.find(window);
+        if (it != windows_.end()) {
             ++released_;
-            delete static_cast<int*>(window);
+            if (--it->second == 0) {
+                windows_.erase(it);
+                delete static_cast<int*>(window);
+            }
         }
     }
 
@@ -62,7 +67,7 @@ public:
     std::int32_t last_geometry_format = 0;
 
 private:
-    std::unordered_map<void*, bool> windows_;
+    std::unordered_map<void*, unsigned> windows_;
     std::uint64_t next_window_ = 0;
     int released_ = 0;
     int acquired_ = 0;
