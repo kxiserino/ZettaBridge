@@ -11,11 +11,13 @@ Development ADB was used. No physical-device, account-login or gameplay acceptan
 | Unity could not load because `ASensorEventQueue_disableSensor` was missing. | Supply the legacy sensor ABI with an empty sensor inventory. Queue operations fail; no fake samples or successful enable calls. | Unity loads and reaches its main thread. Actual compass/accelerometer forwarding is still absent. |
 | Unity displayed `Failed to load IL2CPP` after Java loaded the library. | Map the active plugin's ARM64 proxy paths back to ARM32 libraries for guest filesystem operations. ART still gets its proxy. | IL2CPP metadata/resources open and graphics initialization proceeds. |
 | `eglCreateWindowSurface` rejected a released window handle. | Keep guest handles until the final acquired reference is released. Fix the mock backend to model reference counts too. | EGL creates a 720x1280 surface and Unity issues OpenGL calls. |
+| The screen stayed black with 868 GL calls and zero swaps. Boehm GC (IL2CPP) suspends threads with `SIGPWR` and waits for each to acknowledge. The target thread's handler calls `rt_sigsuspend`, which was unimplemented (`-ENOSYS`), so the handler spun; a thread already blocked in a guest futex never returned to the stop dispatcher at all, so the signal was never delivered. | Implement `rt_sigsuspend`/`sigsuspend` (park on the per-thread post word until a deliverable signal is pending) and bound every blocking guest futex wait so a posted signal is observed within one poll. | The stop-the-world handshake completes; Kanto renders its splash and reaches `prepareLoginScreen`. |
 
-Current limit: black screen, 868 reported GL calls, zero swaps, one rejected
-`glTexImage2D`, no recorded guest exit in the observed run. The texture rejection
-is a lead, not a proven explanation for the lack of frames. Do not claim working
-rendering, acceptable speed, or a working game from this checkpoint.
+Current result: the game renders real frames (`nativeRender`, rising `egl-swaps`)
+and the Kanto splash is visible. The runtime report shows no guest exit, no
+unimplemented host call and no JNI error. The client is a private-server build and
+no account/server has been supplied, so playability past the login screen is not
+assessed here. Do not claim acceptable speed or a working game from this checkpoint.
 
 ## Checks
 
@@ -26,6 +28,9 @@ rendering, acceptable speed, or a working game from this checkpoint.
   directory aliases, unrelated paths, prefix collisions and escaping symlinks.
 - `proxy_runtime_test` checks that the plugin directory reaches runtime options.
 - `native_window_test` failed before the reference-count fix and passes after it.
+- `sigsuspend_dynamic` covers a signal delivered to a thread blocked in a futex and
+  `sigsuspend` on a pending signal; it failed before the signal/futex fixes and passes
+  after them.
 - Guest CPU/threads/signals/C++ regression programs passed on the ARM64 emulator.
 - Android native build, generated runtime bundle validation and Gradle debug build pass.
 

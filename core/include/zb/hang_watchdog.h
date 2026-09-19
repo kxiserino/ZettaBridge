@@ -41,6 +41,12 @@ struct ThreadActivitySample {
 // A snapshot of every guest thread slot touched so far.
 std::vector<ThreadActivitySample> snapshot_thread_activity();
 
+// Diagnostics-only: a callback that renders a short guest backtrace for a thread that has made
+// no progress. Set by Process (the only party that knows the guest registers and memory); the
+// watchdog calls it once per stuck thread so a deadlock names the guest code it waits in. Safe
+// to leave unset.
+void set_guest_stack_reporter(std::function<std::string(std::int32_t tid)> reporter);
+
 // "sys:openat" or "host:0x2a3"; "(none)" for a slot that was never recorded.
 std::string describe_thread_activity(const ThreadActivitySample& sample);
 

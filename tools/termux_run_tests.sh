@@ -32,6 +32,7 @@ run_case hello_dynamic 3 "$HERE/out/io.tmp"
 run_case threads_dynamic 0
 run_case kuser_dynamic 0
 run_case signals_dynamic 134
+run_case sigsuspend_dynamic 0
 run_case syscalls_dynamic 0 "$HERE/out/syscalls_tmp"
 run_case log_dynamic 0
 ZB_EXTRA="--env LD_LIBRARY_PATH=$HERE/guest/lib"

@@ -9,7 +9,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
+#include <string>
 #include <thread>
+#include <vector>
 
 #include "zb/host_jni.h"
 #include "zb/runtime_report.h"
@@ -218,6 +221,23 @@ std::string describe_thread_activity(const ThreadActivitySample& sample) {
     }
 }
 
+namespace {
+
+std::mutex g_reporter_mutex;
+std::function<std::string(std::int32_t)> g_reporter;
+
+std::function<std::string(std::int32_t)> guest_stack_reporter() {
+    std::lock_guard<std::mutex> lock(g_reporter_mutex);
+    return g_reporter;
+}
+
+}  // namespace
+
+void set_guest_stack_reporter(std::function<std::string(std::int32_t)> reporter) {
+    std::lock_guard<std::mutex> lock(g_reporter_mutex);
+    g_reporter = std::move(reporter);
+}
+
 HangWatchdog::HangWatchdog(SnapshotFn snapshot) : snapshot_(std::move(snapshot)) {}
 
 bool HangWatchdog::sample(Clock::time_point now) {
@@ -281,6 +301,19 @@ bool HangWatchdog::sample(Clock::time_point now) {
     if (!census_written) {
         census_written = true;
         write_threads_census();
+    }
+
+    // Guest backtraces of the stuck threads, when Process has installed a reporter. This is what
+    // names the guest function a deadlock waits in, which the kernel state alone cannot.
+    if (const auto reporter = guest_stack_reporter()) {
+        std::size_t stacks = 0;
+        for (const State* state : stuck) {
+            if (stacks >= 3) break;
+            const std::string stack = reporter(state->tid);
+            if (stack.empty()) continue;
+            runtime_report().note_watch_detail("stack-" + std::to_string(state->tid), stack);
+            ++stacks;
+        }
     }
 
     ++notes_written_;

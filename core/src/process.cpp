@@ -169,9 +169,13 @@ bool map_kuser_page(GuestMemory& mem) {
 
 Process::Process() : monitor_(std::make_unique<Dynarmic::ExclusiveMonitor>(kMaxThreads)) {
     if (const char* precise = std::getenv("ZB_PRECISE_FAULTS")) precise_faults_ = precise[0] == '1';
+    // Diagnostics only: lets the hang watchdog name the guest code a deadlock waits in.
+    set_guest_stack_reporter([this](std::int32_t tid) { return describe_thread_stack(tid); });
 }
 
-Process::~Process() = default;
+Process::~Process() {
+    set_guest_stack_reporter(nullptr);
+}
 
 void Process::request_exit(int status) {
     exit_status_ = status;
@@ -216,6 +220,39 @@ std::string Process::describe_address(std::uint32_t addr) const {
         }
     }
     return "?";
+}
+
+std::string Process::describe_thread_stack(std::int32_t tid) const {
+    GuestThread* thread = const_cast<Process*>(this)->find_thread(tid);
+    if (thread == nullptr) return {};
+    const auto& r = thread->regs();
+    char head[96];
+    std::snprintf(head, sizeof head, "pc=%08x@%s", r[15], describe_address(r[15]).c_str());
+    std::string out = head;
+    std::snprintf(head, sizeof head, " lr=%08x@%s", r[14], describe_address(r[14]).c_str());
+    out += head;
+    // Walk the guest stack for words that name a known file mapping: return addresses of the
+    // active call chain, plus stale ones, nearest first. Bounded and allocation-light.
+    const std::uint32_t sp = r[13];
+    std::size_t found = 0;
+    for (std::uint32_t i = 0; i < 512; ++i) {
+        const std::uint64_t at = static_cast<std::uint64_t>(sp) + 4ull * i;
+        if (at + 4 > kGuestSpaceSize) break;
+        const std::uint8_t* bytes =
+            mem_.host_ptr(static_cast<std::uint32_t>(at), 4, kPageRead);
+        if (bytes == nullptr) break;
+        std::uint32_t word = 0;
+        std::memcpy(&word, bytes, sizeof word);
+        const std::uint32_t code = word & ~1u;
+        if (code < 0x1000) continue;
+        const std::string where = describe_address(code);
+        if (where == "?") continue;
+        std::snprintf(head, sizeof head, " | %08x@", code);
+        out += head;
+        out += where;
+        if (++found >= 6) break;
+    }
+    return out;
 }
 
 void Process::add_textrel_range(std::uint32_t start, std::uint32_t length) {

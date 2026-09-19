@@ -151,6 +151,9 @@ public:
     void forget_mappings(std::uint32_t start, std::uint64_t length);
     // "libc.so offset 0x1234" style description, or "?" if the address is not file-backed.
     std::string describe_address(std::uint32_t addr) const;
+    // Diagnostics-only guest backtrace for a thread by host tid: its pc/lr plus the stack words
+    // that name a known file mapping. Used by the hang watchdog; never changes guest state.
+    std::string describe_thread_stack(std::int32_t tid) const;
 
     // Executable segments of libraries marked DT_ZB_TEXTREL (see elf_fixups.h). They stay
     // writable inside the emulator so text relocations can be applied. forget_mappings drops them.
