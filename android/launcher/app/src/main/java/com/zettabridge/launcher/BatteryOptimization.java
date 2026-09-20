@@ -12,8 +12,8 @@ import android.provider.Settings;
 /**
  * Android's app freezer stops every thread of an app that is not exempt from battery optimisation.
  * For a translated guest that is indistinguishable from a crash: no frames, no error, no recovery.
- * The launcher is only a wrapper around a plugin, so it asks once, before the user launches
- * anything, and never blocks the launch if they decline.
+ * So the wrapper asks once, before the game starts, and names the game rather than itself: the
+ * user only ever sees the game's name.
  */
 final class BatteryOptimization {
     private static final String PREFS = "zb";
@@ -27,19 +27,30 @@ final class BatteryOptimization {
         return power != null && power.isIgnoringBatteryOptimizations(context.getPackageName());
     }
 
-    /** Ask once, if the app is not exempt yet. */
-    static void ensureExempt(Activity activity) {
-        if (exempt(activity)) return;
+    /**
+     * Run `whenDone` once the exemption has been settled: immediately when it already is or when
+     * the question has been asked before, otherwise after the user answers. The game is never
+     * started while the dialog is up, so the answer applies to it.
+     */
+    static void ensureExempt(Activity activity, Runnable whenDone) {
         SharedPreferences prefs = activity.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-        if (prefs.getBoolean(ASKED, false)) return;
+        if (exempt(activity) || prefs.getBoolean(ASKED, false)) {
+            whenDone.run();
+            return;
+        }
         prefs.edit().putBoolean(ASKED, true).apply();
+        final String name = BundledPlugin.displayName(activity);
         new AlertDialog.Builder(activity)
-                .setTitle("Keep games from freezing")
+                .setTitle("Keep " + name + " from freezing")
                 .setMessage("Android freezes apps that are not exempt from battery optimisation. "
-                        + "While frozen the game stops responding and cannot recover, so allow "
-                        + "ZettaBridge to run in the background.")
-                .setPositiveButton("Allow", (dialog, which) -> request(activity))
-                .setNegativeButton("Not now", null)
+                        + "While frozen " + name + " stops responding and cannot recover, so allow "
+                        + "it to run in the background.")
+                .setCancelable(false)
+                .setPositiveButton("Allow", (dialog, which) -> {
+                    request(activity);
+                    whenDone.run();
+                })
+                .setNegativeButton("Not now", (dialog, which) -> whenDone.run())
                 .show();
     }
 

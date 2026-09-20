@@ -54,6 +54,18 @@ cp "$GUEST/lib/libzbcompat.so" "$GUEST/lib/libzbjni.so" \
 cp "$ANDROID/libzbproxy.so" "$ZB/host/libzbproxy.so"
 cp "$ANDROID/libzbridge.so" "$JNI/libzbridge.so"
 
+# A wrapper build carries one game, bundled as assets/bundled/plugin.apk. The APK is proprietary
+# and stays outside the repository, so it is copied in here rather than kept in the source tree.
+if [ -n "${ZB_BUNDLED_PLUGIN:-}" ]; then
+    if [ ! -f "$ZB_BUNDLED_PLUGIN" ]; then
+        echo "ZB_BUNDLED_PLUGIN is set but is not a file: $ZB_BUNDLED_PLUGIN" >&2
+        exit 1
+    fi
+    mkdir -p "$ASSETS/bundled"
+    cp "$ZB_BUNDLED_PLUGIN" "$ASSETS/bundled/plugin.apk"
+    echo "bundled $(basename "$ZB_BUNDLED_PLUGIN") as assets/bundled/plugin.apk"
+fi
+
 (cd "$ASSETS" && find zb -type f | LC_ALL=C sort) > "$ASSETS/zb-files.txt"
 VERSION=$(cd "$ASSETS" && while IFS= read -r file; do sha256sum "$file"; done < zb-files.txt | sha256sum | cut -d' ' -f1)
 printf '%s\n' "$VERSION" > "$ASSETS/zb-version.txt"

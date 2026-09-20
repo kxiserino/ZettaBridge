@@ -33,6 +33,10 @@ android {
         versionCode = 1
         versionName = "0.1.0"
         ndk { abiFilters += "arm64-v8a" }
+        // A wrapper build carries one game and is named after it, so nothing the user sees says
+        // ZettaBridge. -PzbAppName=Kanto for such a build; the default is the generic launcher.
+        val appName = (findProperty("zbAppName") as String?)?.takeIf { it.isNotBlank() } ?: "ZettaBridge"
+        resValue("string", "app_name", appName)
     }
 
     signingConfigs {
