@@ -10,6 +10,7 @@
 #include <cstring>
 
 #include "zb/log.h"
+#include "zb/runtime_report.h"
 #include "zb/process.h"
 
 namespace zb {
@@ -118,7 +119,25 @@ void Process::clear_process_signal_target(GuestThread* thread) {
     if (!g_process_signal_target.compare_exchange_strong(expected, nullptr, std::memory_order_seq_cst)) return;
     // Readers only span one post_signal() call (a few atomic ops and a futex wake): spin briefly,
     // then yield, then sleep with a capped backoff so a descheduled reader does not burn a core.
-    for (unsigned attempt = 0; g_target_readers.load(std::memory_order_seq_cst) != 0; ++attempt) {
+    //
+    // The wait is bounded because the counter is global: a handler whose thread dies inside
+    // post_signal() never decrements it, and an unbounded wait then hangs every later thread
+    // teardown in the process - exactly the shape of the in-game freeze, where the whole guest
+    // stops while one thread sleeps here and the exiting threads pile up on the registry mutex.
+    // After the bound the thread is retired anyway and the leak is recorded, since a permanent
+    // hang is worse than the small window this wait exists to close.
+    constexpr unsigned kReaderAttemptLimit = 200000;  // seconds, at the capped 1 ms backoff
+    unsigned attempt = 0;
+    while (g_target_readers.load(std::memory_order_seq_cst) != 0) {
+        if (attempt >= kReaderAttemptLimit) {
+            const unsigned stuck = g_target_readers.load(std::memory_order_seq_cst);
+            log("clear_process_signal_target: %u signal handler(s) never finished; retiring anyway",
+                stuck);
+            runtime_report().note_signal_event("reader-wait gave up with " + std::to_string(stuck) +
+                                               " handler(s) in flight");
+            break;
+        }
+        ++attempt;
         if (attempt < 64) continue;
         if (attempt < 1024) {
             sched_yield();
