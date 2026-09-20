@@ -291,6 +291,37 @@ bool HangWatchdog::sample(Clock::time_point now) {
     }
     previous_ = std::move(next);
 
+    // Freeze detection runs before the "enough notes already" early return: GL host calls stopping
+    // is the signature of the in-game stall (the whole process goes quiet with no guest exit), and
+    // it must be capturable even after the ordinary notes are used up. Dump every thread's guest
+    // stack exactly once, so the report names the guest function each thread is stuck in.
+    {
+        static bool freeze_reported = false;
+        const std::uint64_t last = runtime_report().last_gl_call_millis();
+        if (!freeze_reported && last != 0) {
+            const std::uint64_t now_millis = static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch())
+                    .count());
+            if (now_millis > last + 5'000) {
+                freeze_reported = true;
+                runtime_report().note_watch_detail("freeze",
+                                                   "gl host calls stopped for more than 5s");
+                if (const auto reporter = guest_stack_reporter()) {
+                    std::size_t dumped = 0;
+                    for (const State& state : previous_) {
+                        if (dumped >= 12) break;
+                        const std::string stack = reporter(state.tid);
+                        if (stack.empty()) continue;
+                        runtime_report().note_watch_detail(
+                            "freeze-thread-" + std::to_string(state.tid), stack);
+                        ++dumped;
+                    }
+                }
+            }
+        }
+    }
+
     if (notes_written_ >= kMaxNotes) return false;
 
     std::vector<const State*> stuck;
@@ -354,36 +385,6 @@ bool HangWatchdog::sample(Clock::time_point now) {
                 if (!stack.empty()) {
                     busy_notes.fetch_add(1, std::memory_order_relaxed);
                     runtime_report().note_watch_detail("busy-" + std::to_string(busiest->tid), stack);
-                }
-            }
-        }
-    }
-
-    // Freeze detection: GL host calls stopping is the signature of the in-game stall (the whole
-    // process goes quiet with no guest exit). Dump every thread's guest stack exactly once, so
-    // the report names the guest function each thread is stuck in.
-    {
-        static bool freeze_reported = false;
-        const std::uint64_t last = runtime_report().last_gl_call_millis();
-        if (!freeze_reported && last != 0) {
-            const std::uint64_t now_millis = static_cast<std::uint64_t>(
-                std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::steady_clock::now().time_since_epoch())
-                    .count());
-            if (now_millis > last + 5'000) {
-                freeze_reported = true;
-                runtime_report().note_watch_detail("freeze",
-                                                   "gl host calls stopped for more than 5s");
-                if (const auto reporter = guest_stack_reporter()) {
-                    std::size_t dumped = 0;
-                    for (const State& state : previous_) {
-                        if (dumped >= 12) break;
-                        const std::string stack = reporter(state.tid);
-                        if (stack.empty()) continue;
-                        runtime_report().note_watch_detail(
-                            "freeze-thread-" + std::to_string(state.tid), stack);
-                        ++dumped;
-                    }
                 }
             }
         }
