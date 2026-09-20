@@ -23,7 +23,10 @@ public class BootActivity extends Activity {
     protected void onCreate(Bundle state) {
         super.onCreate(state);
         boolean bundled = BundledPlugin.present(this);
-        Diagnostics.note(this, "boot: bundled=" + bundled + " started");
+        // The page size decides whether the translator can map guest memory at all, and it is the
+        // one thing a device we cannot hold differs by.
+        Diagnostics.note(this, "boot: bundled=" + bundled + " pageSize="
+                + android.system.Os.sysconf(android.system.OsConstants._SC_PAGESIZE) + " started");
         if (bundled) show(status("Starting " + BundledPlugin.displayName(this)));
         // The exemption is settled before the game starts, so the answer applies to it.
         BatteryOptimization.ensureExempt(this, this::boot);

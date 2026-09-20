@@ -111,7 +111,7 @@ std::string Process::build_maps() const {
         return {};
     };
 
-    const std::uint64_t page_count = kGuestSpaceSize >> 12;
+    const std::uint64_t page_count = kGuestSpaceSize / kPageSize;
     std::uint64_t page = 0;
     while (page < page_count) {
         const std::uint8_t flags = flags_at(page);

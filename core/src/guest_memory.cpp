@@ -12,7 +12,7 @@ namespace zb {
 namespace {
 
 constexpr std::uint64_t kGuardSize = 64 * 1024;
-constexpr std::uint32_t kLowestAllocPage = 0x10000 >> 12;
+const std::uint32_t kLowestAllocPage = 0x10000 / kPageSize;
 
 bool range_valid(std::uint32_t addr, std::uint64_t len) {
     return len != 0 && (addr & kPageMask) == 0 && static_cast<std::uint64_t>(addr) + len <= kGuestSpaceSize;
@@ -35,7 +35,7 @@ int host_prot(int guest_prot) {
     return p;
 }
 
-GuestMemory::GuestMemory() : pages_(static_cast<std::size_t>(kGuestSpaceSize >> 12), 0) {
+GuestMemory::GuestMemory() : pages_(static_cast<std::size_t>(kGuestSpaceSize / kPageSize), 0) {
     void* p = mmap(nullptr, kGuestSpaceSize + kGuardSize, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
     if (p == MAP_FAILED) {
         log("cannot reserve guest address space: %s", std::strerror(errno));

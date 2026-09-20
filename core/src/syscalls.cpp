@@ -245,7 +245,8 @@ std::int32_t sys_mmap2(Ctx& c) {
     const int prot = static_cast<int>(c.a[2]);
     const int flags = static_cast<int>(c.a[3]);
     const int fd = static_cast<int>(c.a[4]);
-    const std::uint64_t offset = static_cast<std::uint64_t>(c.a[5]) * kPageSize;
+    // mmap2's offset unit is fixed at 4 KiB by the 32-bit ABI, not the host page size.
+    const std::uint64_t offset = static_cast<std::uint64_t>(c.a[5]) * kMmap2PageSize;
 
     if (len == 0) return -EINVAL;
     const std::uint64_t size = page_round_up(len);

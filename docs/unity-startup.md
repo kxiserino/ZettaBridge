@@ -110,6 +110,26 @@ processor-id exhaustion (high-water 111/1024), carrier supply (nine borrows,
 pool one, no timeouts), and bridge throughput (about 44 fps, `UnityMain` mostly
 sleeping).
 
+## A 16 KiB page device cannot map the guest at all (2026-09-20)
+
+A Pixel 11 crashed on launch after the launcher had done everything right: the
+breadcrumbs in `zb-errors.txt` read `bundled=true ... imported=ac.kanto.client`
+and `launching ac.kanto.client`, so the crash is in the `:guest` process, with no
+Java stack.
+
+The cause is the page size. `GuestMemory` mapped the guest at `base() + addr` with
+`mmap(MAP_FIXED)` and `mprotect`, using a fixed 4 KiB guest page. Both calls
+require *host* page alignment, so on a device whose pages are 16 KiB every mapping
+and protection fails with `EINVAL` and the guest dies before it runs. The page
+size is also the one thing a device we cannot hold differs by, so `BootActivity`
+now writes it into the breadcrumb (`boot: ... pageSize=16384 ...`).
+
+The fix is in `core/include/zb/guest_memory.h`: `kPageSize` follows
+`sysconf(_SC_PAGESIZE)`, so the page table, the ELF mappings, the host protection
+and `AT_PAGESZ` all agree on 4 KiB or 16 KiB as the device requires.
+`kMmap2PageSize` stays 4096 because the 32-bit `mmap2` ABI fixes its offset unit
+there whatever the host page size is. On a 4 KiB device nothing changes.
+
 ## Checks
 
 - Sensor regression failed to link against the original guest library, then passed
