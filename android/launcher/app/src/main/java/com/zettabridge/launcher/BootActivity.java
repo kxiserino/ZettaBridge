@@ -14,23 +14,30 @@ import android.widget.TextView;
  * With a bundled game there is no library screen at all - first run imports it (once, out of
  * assets), later runs go straight to it. A build without a bundled game falls back to the library
  * screen so the APK stays usable as the generic launcher.
+ *
+ * Every step leaves a line in zb-errors.txt before it can fail, so a crash on a device we do not
+ * have still says how far it got.
  */
 public class BootActivity extends Activity {
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
-        if (BundledPlugin.present(this)) show(status("Starting " + BundledPlugin.displayName(this)));
+        boolean bundled = BundledPlugin.present(this);
+        Diagnostics.note(this, "boot: bundled=" + bundled + " started");
+        if (bundled) show(status("Starting " + BundledPlugin.displayName(this)));
         // The exemption is settled before the game starts, so the answer applies to it.
         BatteryOptimization.ensureExempt(this, this::boot);
     }
 
     private void boot() {
+        Diagnostics.note(this, "boot: exemption settled, exempt=" + BatteryOptimization.exempt(this));
         if (!BundledPlugin.present(this)) {
             startActivity(new Intent(this, LibraryActivity.class));
             finish();
             return;
         }
         PluginRecord record = BundledPlugin.imported(this);
+        Diagnostics.note(this, "boot: imported=" + (record == null ? "no" : record.packageName));
         if (record != null && record.isLaunchable()) {
             launch(record.packageName);
             return;
@@ -51,12 +58,15 @@ public class BootActivity extends Activity {
             } else {
                 failure = imported.label + ": " + imported.status();
             }
-        } catch (Exception e) {
-            Diagnostics.report(this, "could not import the bundled game", e, false);
-            failure = e.toString();
+        } catch (Throwable t) {
+            // Throwable, not Exception: an Error here (the heap, a bad asset) would otherwise kill
+            // the process with nothing written down.
+            Diagnostics.report(this, "could not import the bundled game", t, false);
+            failure = t.toString();
         }
         final String launch = packageName;
         final String error = failure;
+        Diagnostics.note(this, launch != null ? "boot: installed " + launch : "boot: failed " + error);
         runOnUiThread(() -> {
             if (launch != null) {
                 launch(launch);
@@ -70,6 +80,7 @@ public class BootActivity extends Activity {
     }
 
     private void launch(String packageName) {
+        Diagnostics.note(this, "boot: launching " + packageName);
         startActivity(PluginSwitchActivity.intent(this, packageName));
         finish();
     }

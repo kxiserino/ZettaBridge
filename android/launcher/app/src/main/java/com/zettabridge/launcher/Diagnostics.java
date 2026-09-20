@@ -106,6 +106,12 @@ final class Diagnostics {
         });
     }
 
+    /** One line in the same file, for the steps a start-up takes before anything can crash. */
+    static void note(Context context, String text) {
+        appendToFile(context.getApplicationContext() != null ? context.getApplicationContext() : context,
+                new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(new Date()) + " " + text);
+    }
+
     private static void appendToFile(Context context, String text) {
         try {
             File dir = context.getExternalFilesDir(null);
