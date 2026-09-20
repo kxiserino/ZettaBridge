@@ -308,6 +308,17 @@ bool HangWatchdog::sample(Clock::time_point now) {
                 runtime_report().note_watch_detail("freeze",
                                                    "gl host calls stopped for more than 5s");
                 if (const auto reporter = guest_stack_reporter()) {
+                    // The thread that made the last GL host call is the render thread: its guest
+                    // stack is the frame the game stopped producing frames in. Dump it first, even
+                    // if it falls outside the first twelve slots.
+                    const std::uint64_t gl_tid = runtime_report().gl_last_call_tid();
+                    if (gl_tid != 0) {
+                        const std::string stack = reporter(static_cast<std::int32_t>(gl_tid));
+                        if (!stack.empty()) {
+                            runtime_report().note_watch_detail(
+                                "freeze-gl-thread-" + std::to_string(gl_tid), stack);
+                        }
+                    }
                     std::size_t dumped = 0;
                     for (const State& state : previous_) {
                         if (dumped >= 12) break;

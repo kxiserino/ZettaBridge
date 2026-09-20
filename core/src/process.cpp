@@ -244,9 +244,13 @@ std::string Process::describe_thread_stack(std::int32_t tid) const {
     out += head;
     // Walk the guest stack for words that name a known file mapping: return addresses of the
     // active call chain, plus stale ones, nearest first. Bounded and allocation-light.
+    // A C# call chain is deep, and the first few stack words usually name libc or a libunity
+    // trampoline, so the cap is high enough to reach the frames that matter. Duplicates are
+    // skipped: a saved register or a stale return address would otherwise pad the chain.
     const std::uint32_t sp = r[13];
     std::size_t found = 0;
-    for (std::uint32_t i = 0; i < 512; ++i) {
+    std::uint32_t previous = 0;
+    for (std::uint32_t i = 0; i < 2048; ++i) {
         const std::uint64_t at = static_cast<std::uint64_t>(sp) + 4ull * i;
         if (at + 4 > kGuestSpaceSize) break;
         const std::uint8_t* bytes =
@@ -256,12 +260,14 @@ std::string Process::describe_thread_stack(std::int32_t tid) const {
         std::memcpy(&word, bytes, sizeof word);
         const std::uint32_t code = word & ~1u;
         if (code < 0x1000) continue;
+        if (code == previous) continue;
         const std::string where = describe_address(code);
         if (where == "?") continue;
+        previous = code;
         std::snprintf(head, sizeof head, " | %08x@", code);
         out += head;
         out += where;
-        if (++found >= 6) break;
+        if (++found >= 24) break;
     }
     return out;
 }

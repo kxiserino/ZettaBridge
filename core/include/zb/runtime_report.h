@@ -33,7 +33,9 @@ public:
     static constexpr std::size_t kMaxDistinctHostCalls = 16;
     static constexpr std::size_t kMaxLibraries = 32;
     // Recorded error and exit texts are folded to one line and cut to this length.
-    static constexpr std::size_t kMaxDetail = 240;
+    // Large enough for a full guest backtrace (24 frames of " | pc@file offset 0x..."): the
+    // freeze dump is only useful if the whole chain survives.
+    static constexpr std::size_t kMaxDetail = 2400;
 
     // Called after every change, with the report unlocked. `structural` is true when the report
     // gained a line (a new distinct host call, a load, a JNI_OnLoad, the exit reason) and false
