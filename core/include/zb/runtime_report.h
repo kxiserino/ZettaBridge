@@ -65,6 +65,12 @@ public:
     // that burns kernel time. Lock-free relaxed add on the hot path.
     static constexpr std::size_t kMaxSyscallNumbers = 512;
     void note_syscall(std::uint32_t number);
+    // A rolling window of the most recent syscalls with their first three arguments, whatever the
+    // thread. A freeze dump that shows only "everyone is parked in futex" cannot say which futex,
+    // fd or timeout; this can.
+    static constexpr std::size_t kMaxSyscallTrace = 256;
+    void note_syscall_args(std::int32_t tid, std::uint32_t number, std::uint32_t a0, std::uint32_t a1,
+                           std::uint32_t a2);
 
     // Guest file opens worth knowing about (did the guest find its .so/.dat/.bin payloads and
     // flutter_assets): the most recent kMaxOpenedPaths distinct paths successfully opened that
@@ -193,6 +199,17 @@ private:
     std::uint64_t registered_natives_ = 0;
     std::string exit_reason_;
     std::array<std::atomic<std::uint64_t>, kMaxSyscallNumbers> syscall_counts_{};
+    struct SyscallTraceEntry {
+        std::atomic<std::int32_t> tid{0};
+        std::atomic<std::uint32_t> number{0};
+        std::atomic<std::uint32_t> a0{0};
+        std::atomic<std::uint32_t> a1{0};
+        std::atomic<std::uint32_t> a2{0};
+    };
+    // Lock-free ring: a writer claims a slot, then fills it. A torn read is possible but a
+    // diagnostic trace tolerates that; taking a lock here would tax every syscall.
+    std::array<SyscallTraceEntry, kMaxSyscallTrace> syscall_trace_{};
+    std::atomic<std::uint64_t> syscall_trace_next_{0};
 
     struct NativeCallEntry {
         std::string name;

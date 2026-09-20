@@ -1153,6 +1153,7 @@ bool handle_syscall(Process& proc, GuestThread& thread) {
     };
     record_thread_activity(guest_tid(), ThreadActivityKind::kSyscall, nr);
     runtime_report().note_syscall(nr);
+    runtime_report().note_syscall_args(guest_tid(), nr, c.a[0], c.a[1], c.a[2]);
     // Marks the syscall finished on every exit path, so a thread sitting inside one (a blocking
     // futex, a poll) reads differently from a thread that merely stopped calling out.
     struct ActivityDone {

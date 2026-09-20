@@ -215,6 +215,17 @@ void RuntimeReport::note_syscall(std::uint32_t number) {
     if (number < kMaxSyscallNumbers) syscall_counts_[number].fetch_add(1, std::memory_order_relaxed);
 }
 
+void RuntimeReport::note_syscall_args(std::int32_t tid, std::uint32_t number, std::uint32_t a0,
+                                      std::uint32_t a1, std::uint32_t a2) {
+    const std::uint64_t slot = syscall_trace_next_.fetch_add(1, std::memory_order_relaxed);
+    SyscallTraceEntry& entry = syscall_trace_[slot % kMaxSyscallTrace];
+    entry.number.store(number, std::memory_order_relaxed);
+    entry.a0.store(a0, std::memory_order_relaxed);
+    entry.a1.store(a1, std::memory_order_relaxed);
+    entry.a2.store(a2, std::memory_order_relaxed);
+    entry.tid.store(tid, std::memory_order_relaxed);
+}
+
 void RuntimeReport::note_gl_call_index(std::uint32_t index, const char* function,
                                        std::uint64_t host_tid) {
     if (index < kMaxGlCallIndices) gl_call_counts_[index].fetch_add(1, std::memory_order_relaxed);
@@ -558,6 +569,24 @@ std::string RuntimeReport::text() const {
         }
         if (shown == 0) out += " (none)";
         out += " total=" + std::to_string(total) + '\n';
+    }
+
+    // The last handful of syscalls in order (most recent last), with arguments: a freeze dump
+    // that names the fd, futex address or sleep length the process stopped on.
+    {
+        const std::uint64_t next = syscall_trace_next_.load(std::memory_order_relaxed);
+        const std::uint64_t available = std::min<std::uint64_t>(next, kMaxSyscallTrace);
+        const std::uint64_t show = std::min<std::uint64_t>(available, 40);
+        for (std::uint64_t i = 0; i < show; ++i) {
+            const SyscallTraceEntry& entry = syscall_trace_[(next - show + i) % kMaxSyscallTrace];
+            char line[160];
+            std::snprintf(line, sizeof line, "syscall-trace-%llu: tid=%d %s(0x%x, 0x%x, 0x%x)",
+                          static_cast<unsigned long long>(i + 1), entry.tid.load(),
+                          syscall_name(entry.number.load()), entry.a0.load(), entry.a1.load(),
+                          entry.a2.load());
+            out += line;
+            out += '\n';
+        }
     }
 
     out += "guest-exit: ";
