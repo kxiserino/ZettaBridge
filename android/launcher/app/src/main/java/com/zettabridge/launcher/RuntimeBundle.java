@@ -20,6 +20,19 @@ final class RuntimeBundle {
 
     private RuntimeBundle() {}
 
+    /**
+     * The runtime bundle this APK carries. Written into the boot breadcrumb so a report always says
+     * which build produced it, which a crash signature alone cannot.
+     */
+    static String version(Context context) {
+        try {
+            String version = readAssetText(context.getAssets(), VERSION).trim();
+            return version.isEmpty() ? "unknown" : version.substring(0, Math.min(12, version.length()));
+        } catch (IOException e) {
+            return "unknown";
+        }
+    }
+
     static synchronized void install(Context context) throws IOException {
         File target = new File(context.getFilesDir(), "zb");
         String version = readAssetText(context.getAssets(), VERSION).trim();

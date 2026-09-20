@@ -175,6 +175,25 @@ generator bugs surfaced on the way:
 With the fix, `egl-procaddress-misses` is 0, all six libraries load, and the client
 renders.
 
+## Mapped buffers are keyed by target, which drops uploads (2026-09-20)
+
+With the NULL proc address fixed, a Pixel 11 played its music and rendered
+(`egl-swaps: 1245`, 148k GL calls) but showed a black screen. The report had no
+GL error, and 65 rejections of one kind:
+
+```
+gl-rejection-1: glMapBufferRangeEXT: buffer target is already mapped
+                args=0x8892 (GL_ARRAY_BUFFER), 0x0, 0xc, ...
+```
+
+`glMapBufferRange` maps whatever buffer is *bound* to the target, and an engine
+routinely has several buffers of the same target, but the mirror table was keyed
+by the target. A second buffer's map was therefore rejected as "already mapped",
+its upload was dropped, and nothing drew - a black screen, not a GL error the
+guest would see. The table is keyed by the buffer object now.
+`BootActivity` also stamps the runtime bundle version into the breadcrumb
+(`boot: ... runtime=65d5a5cdc9b0 ...`) so a report always says which build made it.
+
 ## Checks
 
 - Sensor regression failed to link against the original guest library, then passed

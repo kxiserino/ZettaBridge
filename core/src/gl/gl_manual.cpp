@@ -888,11 +888,25 @@ struct BufferMapping {
 };
 
 std::mutex mapping_mutex;
-std::unordered_map<GLenum, BufferMapping> mappings;
+// Keyed by the buffer object, not by the target: glMapBufferRange maps whatever is bound to the
+// target, and an engine routinely has several buffers of the same target, so a target key rejects
+// the second buffer's map as "already mapped" and silently drops its upload - which is a black
+// screen, not a GL error the guest would notice.
+std::unordered_map<GLuint, BufferMapping> mappings;
 
-bool find_mapping(GLenum target, BufferMapping& mapping) {
+GLuint bound_buffer(const HostGl& host, GLenum target) {
+    const GlThreadState& current = state(host);
+    if (target == kGlArrayBuffer) return current.array_buffer;
+    if (target == kGlElementArrayBuffer) return current.element_array_buffer;
+    if (target == kGlPixelPackBuffer) return current.pixel_pack_buffer;
+    if (target == kGlPixelUnpackBuffer) return current.pixel_unpack_buffer;
+    return 0;
+}
+
+bool find_mapping(const HostGl& host, GLenum target, BufferMapping& mapping) {
+    const GLuint buffer = bound_buffer(host, target);
     std::lock_guard<std::mutex> lock(mapping_mutex);
-    const auto found = mappings.find(target);
+    const auto found = mappings.find(buffer);
     if (found == mappings.end()) return false;
     mapping = found->second;
     return true;
@@ -929,7 +943,7 @@ bool unmap_mirrored(HostGl& host, HostGl::Call& call, bool oes) {
     bool mirrored = false;
     {
         std::lock_guard<std::mutex> lock(mapping_mutex);
-        const auto found = mappings.find(target);
+        const auto found = mappings.find(bound_buffer(host, target));
         if (found != mappings.end()) {
             mapping = found->second;
             mappings.erase(found);
@@ -969,7 +983,7 @@ bool report_buffer_pointer(HostGl& host, HostGl::Call& call) {
         return true;
     }
     BufferMapping mapping;
-    *params = find_mapping(target, mapping) ? mapping.guest : 0;
+    *params = find_mapping(host, target, mapping) ? mapping.guest : 0;
     return true;
 }
 
@@ -1037,9 +1051,9 @@ bool zbgl_manual_glMapBufferRange(HostGl& host, HostGl::Call& call) {
         return true;
     }
     BufferMapping existing;
-    if (find_mapping(target, existing)) {
+    if (find_mapping(host, target, existing)) {
         gl_diagnose_map_collision(host, target, existing.diagnostic);
-        host.reject(call, kGlInvalidOperation, "buffer target is already mapped");
+        host.reject(call, kGlInvalidOperation, "the buffer bound to this target is already mapped");
         return true;
     }
     void* mapped = host.backend().glMapBufferRange(target, offset, length, access);
@@ -1067,7 +1081,7 @@ bool zbgl_manual_glMapBufferRange(HostGl& host, HostGl::Call& call) {
                         static_cast<const std::uint8_t*>(mapped));
     {
         std::lock_guard<std::mutex> lock(mapping_mutex);
-        mappings[target] = BufferMapping{
+        mappings[bound_buffer(host, target)] = BufferMapping{
             *address, static_cast<std::uint8_t*>(mapped), static_cast<std::uint64_t>(length),
             access, diagnostic};
     }
@@ -1085,7 +1099,7 @@ bool zbgl_manual_glFlushMappedBufferRange(HostGl& host, HostGl::Call& call) {
     const GLsizeiptr length = call.scalar<GLsizeiptr>(2);
     if (!call.valid()) return true;
     BufferMapping mapping;
-    if (find_mapping(target, mapping) && (mapping.access & kGlMapWrite) != 0) {
+    if (find_mapping(host, target, mapping) && (mapping.access & kGlMapWrite) != 0) {
         // The flushed range is relative to the start of the mapped range.
         if (offset < 0 || length < 0 ||
             static_cast<std::uint64_t>(offset) + static_cast<std::uint64_t>(length) >
@@ -1128,8 +1142,8 @@ bool zbgl_manual_glMapBufferOES(HostGl& host, HostGl::Call& call) {
         return true;
     }
     BufferMapping existing;
-    if (find_mapping(target, existing)) {
-        host.reject(call, kGlInvalidOperation, "buffer target is already mapped");
+    if (find_mapping(host, target, existing)) {
+        host.reject(call, kGlInvalidOperation, "the buffer bound to this target is already mapped");
         return true;
     }
     GLint size = 0;
@@ -1159,7 +1173,7 @@ bool zbgl_manual_glMapBufferOES(HostGl& host, HostGl::Call& call) {
                         static_cast<const std::uint8_t*>(mapped));
     {
         std::lock_guard<std::mutex> lock(mapping_mutex);
-        mappings[target] = BufferMapping{
+        mappings[bound_buffer(host, target)] = BufferMapping{
             *address, static_cast<std::uint8_t*>(mapped), static_cast<std::uint64_t>(size), bits,
             diagnostic};
     }
