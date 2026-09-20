@@ -178,8 +178,8 @@ renders.
 ## Mapped buffers are keyed by target, which drops uploads (2026-09-20)
 
 With the NULL proc address fixed, a Pixel 11 played its music and rendered
-(`egl-swaps: 1245`, 148k GL calls) but showed a black screen. The report had no
-GL error, and 65 rejections of one kind:
+(`egl-swaps: 1245`, 148k GL calls) but showed a black screen, and its report had
+no GL error but 65 rejections of one kind:
 
 ```
 gl-rejection-1: glMapBufferRangeEXT: buffer target is already mapped
@@ -189,8 +189,14 @@ gl-rejection-1: glMapBufferRangeEXT: buffer target is already mapped
 `glMapBufferRange` maps whatever buffer is *bound* to the target, and an engine
 routinely has several buffers of the same target, but the mirror table was keyed
 by the target. A second buffer's map was therefore rejected as "already mapped",
-its upload was dropped, and nothing drew - a black screen, not a GL error the
-guest would see. The table is keyed by the buffer object now.
+its upload was dropped, with no GL error the guest would see. The table is keyed
+by the buffer object now.
+
+This was *not* the black screen, though. A later run that still had all 68
+rejections rendered the map correctly, so the black screen was simply the NULL
+proc address crash: until the GL extension entry points resolved, the client died
+before it drew anything. The mapping fix stands on its own as 68 silently dropped
+uploads.
 `BootActivity` also stamps the runtime bundle version into the breadcrumb
 (`boot: ... runtime=65d5a5cdc9b0 ...`) so a report always says which build made it.
 
