@@ -472,14 +472,26 @@ std::int32_t sys_sigsuspend(Ctx& c, bool rt) {
         mask = low;
     }
     c.thread.sigmask = mask & ~((1ULL << (SIGKILL - 1)) | (1ULL << (SIGSTOP - 1)));
+    // Parking here is the guest's GC stop-the-world: a thread that parks and never resumes takes
+    // the whole process with it. Trace the park and the resume so a freeze shows which thread
+    // never got its signal.
+    runtime_report().note_signal_event("sigsuspend enter tid=" + std::to_string(c.thread.tid) +
+                                       " mask=0x" + [&] {
+                                           char text[20];
+                                           std::snprintf(text, sizeof text, "%llx",
+                                                         static_cast<unsigned long long>(c.thread.sigmask));
+                                           return std::string(text);
+                                       }());
     // Park on the per-thread word that GuestThread::post_signal() wakes, so a signal queued by
     // another guest thread (or a host-forwarded one) ends the suspension. Re-check after every
     // spurious wake: a signal that stays blocked by the new mask must not end it.
     for (;;) {
         const std::uint32_t token = c.thread.park_token();
-        if (c.thread.has_pending_signals(c.thread.sigmask)) return -EINTR;
+        if (c.thread.has_pending_signals(c.thread.sigmask)) break;
         c.thread.park(token);
     }
+    runtime_report().note_signal_event("sigsuspend leave tid=" + std::to_string(c.thread.tid));
+    return -EINTR;
 }
 
 // kill / tkill / tgkill / rt_tgsigqueueinfo inside the guest process. The signal is queued on
@@ -504,12 +516,18 @@ std::int32_t sys_send_signal(Ctx& c, bool process_directed, std::int32_t tgid, s
             if (c.proc.first_time(kSeenSignal | sig)) log("signal %u to another process refused", sig);
             return -EPERM;
         }
-        if (sig != 0) c.thread.post_signal(info);
+        if (sig != 0) {
+            runtime_report().note_signal_event("post sig=" + std::to_string(sig) + " from tid=" +
+                                               std::to_string(c.thread.tid) + " (process)");
+            c.thread.post_signal(info);
+        }
         return 0;
     }
     if (tgid != -1 && tgid != pid) return -ESRCH;
     // Signal 0 only probes for existence and never dereferences the thread.
     if (sig == 0) return c.proc.find_thread(tid) != nullptr ? 0 : -ESRCH;
+    runtime_report().note_signal_event("post sig=" + std::to_string(sig) + " from tid=" +
+                                       std::to_string(c.thread.tid) + " to tid=" + std::to_string(tid));
     // Lookup and post under one lock: the target may be exiting or a carrier lease releasing.
     return c.proc.post_signal_to(tid, info) ? 0 : -ESRCH;
 }

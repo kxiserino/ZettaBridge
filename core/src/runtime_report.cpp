@@ -190,6 +190,15 @@ void RuntimeReport::note_guest_open_failed(const std::string& path, int error) {
     if (observer) (*observer)(structural);
 }
 
+void RuntimeReport::note_signal_event(const std::string& event) {
+    // A rolling window of the most recent events, not the first ones: the interesting trace is
+    // the tail, right before a freeze. Deliberately not marked structural, so a stop-the-world's
+    // frequent signals do not each force a file rewrite; the freeze note flushes the whole report.
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (signal_events_.size() >= kMaxSignalEvents) signal_events_.erase(signal_events_.begin());
+    signal_events_.push_back(one_line(event, kMaxDetail));
+}
+
 void RuntimeReport::note_guest_exit(const std::string& reason) {
     std::shared_ptr<Observer> observer;
     {
@@ -574,6 +583,10 @@ std::string RuntimeReport::text() const {
         }
         if (shown == 0) out += " (none)";
         out += " total=" + std::to_string(total) + '\n';
+    }
+
+    for (std::size_t i = 0; i < signal_events_.size(); ++i) {
+        out += "signal-" + std::to_string(i + 1) + ": " + signal_events_[i] + '\n';
     }
 
     if (opened_paths_.empty()) {

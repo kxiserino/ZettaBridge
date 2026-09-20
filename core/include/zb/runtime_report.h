@@ -76,6 +76,12 @@ public:
     void note_guest_open(const std::string& path);
     void note_guest_open_failed(const std::string& path, int error);
 
+    // Signal trace: the last kMaxSignalEvents posts (kill/tkill/tgkill) and park/suspend events,
+    // in order. A stop-the-world freeze leaves the posted signal with no matching delivery, which
+    // is invisible everywhere else. Never call this from a host signal handler (it takes a lock).
+    static constexpr std::size_t kMaxSignalEvents = 32;
+    void note_signal_event(const std::string& event);
+
     // GLES section (Phase 5 Task 8): proves or disproves that guest GL calls arrive on a host
     // thread with an EGL context current.
     // One GL host call, always counted; the first call also records its function name and the
@@ -197,6 +203,7 @@ private:
 
     std::vector<std::string> opened_paths_;
     std::vector<std::pair<std::string, int>> failed_opens_;
+    std::vector<std::string> signal_events_;
 
     std::uint64_t gl_call_total_ = 0;
     static constexpr std::size_t kMaxGlCallIndices = 384;
