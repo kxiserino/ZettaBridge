@@ -258,6 +258,10 @@ std::string Process::describe_thread_stack(std::int32_t tid) const {
     std::string out = head;
     std::snprintf(head, sizeof head, " lr=%08x@%s", r[14], describe_address(r[14]).c_str());
     out += head;
+    // sp and fp let the stack be unwound offline with the guest libraries' .ARM.exidx tables,
+    // which is what names a C# frame: the scan below only finds words that look like addresses.
+    std::snprintf(head, sizeof head, " sp=%08x fp=%08x cpsr=%08x", r[13], r[11], thread->cpsr());
+    out += head;
     // Walk the guest stack for words that name a known file mapping: return addresses of the
     // active call chain, plus stale ones, nearest first. Bounded and allocation-light.
     // A C# call chain is deep, and the first few stack words usually name libc or a libunity
