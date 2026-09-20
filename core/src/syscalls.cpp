@@ -322,6 +322,83 @@ std::int32_t sys_madvise(Ctx& c) {
     return result_of(::madvise(c.mem.base() + addr, size, static_cast<int>(c.a[2])));
 }
 
+// mremap(2). A guest address g lives at host address base() + g, so resizing cannot hand the
+// mapping back to the host mremap: growing in place is a map_anon of the tail, and MREMAP_MAYMOVE
+// copies the bytes to a fresh guest range. Stubbing this as -ENOMEM made the guest libc's
+// allocator fail ("__cxa_atexit: mmap/mremap failed to allocate ... Out of memory"), which is the
+// state the client froze in.
+std::int32_t sys_mremap(Ctx& c) {
+    constexpr std::uint32_t kMayMove = 1;
+    constexpr std::uint32_t kFixed = 2;
+
+    const std::uint32_t old_address = c.a[0];
+    const std::uint64_t old_size = c.a[1];
+    const std::uint64_t new_size = c.a[2];
+    const std::uint32_t flags = c.a[3];
+    const std::uint32_t requested = c.a[4];
+
+    if ((old_address & kPageMask) != 0 || old_size == 0) return -EINVAL;
+    if ((flags & kFixed) != 0 && (flags & kMayMove) == 0) return -EINVAL;
+
+    const std::uint64_t old_pages = page_round_up(old_size);
+    const std::uint64_t new_pages = page_round_up(new_size);
+    if (old_pages > kGuestSpaceSize || new_pages > kGuestSpaceSize) return -ENOMEM;
+    if (static_cast<std::uint64_t>(old_address) + old_pages > kGuestSpaceSize) return -EFAULT;
+    if (!c.mem.accessible(old_address, old_pages, kPageMapped)) return -EFAULT;
+
+    const std::uint8_t page = c.mem.page_flags(old_address);
+    int prot = 0;
+    if (page & kPageRead) prot |= PROT_READ;
+    if (page & kPageWrite) prot |= PROT_WRITE;
+    if (page & kPageExec) prot |= PROT_EXEC;
+
+    if (new_pages <= old_pages) {
+        if (new_pages < old_pages) {
+            const auto tail = static_cast<std::uint32_t>(old_address + new_pages);
+            const std::uint64_t tail_pages = old_pages - new_pages;
+            if (!c.mem.unmap(tail, tail_pages)) return -EINVAL;
+            c.proc.forget_mappings(tail, tail_pages);
+        }
+        return static_cast<std::int32_t>(old_address);
+    }
+
+    const std::uint64_t grown = new_pages - old_pages;
+    const auto tail = static_cast<std::uint32_t>(old_address + old_pages);
+    if ((flags & kFixed) == 0 && c.mem.range_free(tail, grown)) {
+        if (!c.mem.map_anon(tail, grown, prot)) return -ENOMEM;
+        c.proc.forget_mappings(tail, grown);
+        return static_cast<std::int32_t>(old_address);
+    }
+    if ((flags & kMayMove) == 0) return -ENOMEM;
+
+    std::uint32_t destination = 0;
+    if ((flags & kFixed) != 0) {
+        if ((requested & kPageMask) != 0) return -EINVAL;
+        if (static_cast<std::uint64_t>(requested) + new_pages > kGuestSpaceSize) return -ENOMEM;
+        if (!c.mem.range_free(requested, new_pages)) return -ENOMEM;
+        destination = requested;
+    } else {
+        destination = c.mem.find_free(new_pages, c.proc.mmap_limit);
+        if (destination == 0) return -ENOMEM;
+    }
+
+    // Copy through a writable window, then apply the original protection to the new range.
+    if (!c.mem.map_anon(destination, new_pages, prot | PROT_READ | PROT_WRITE)) return -ENOMEM;
+    c.proc.forget_mappings(destination, new_pages);
+    std::memcpy(c.mem.host_ptr(destination, old_pages, kPageWrite),
+                c.mem.host_ptr(old_address, old_pages, kPageRead),
+                static_cast<std::size_t>(old_pages));
+    if (!c.mem.protect(destination, new_pages, prot)) {
+        c.mem.unmap(destination, new_pages);
+        return -ENOMEM;
+    }
+    if (!c.mem.unmap(old_address, old_pages)) return -EINVAL;
+    c.proc.forget_mappings(old_address, old_pages);
+    c.proc.invalidate(old_address, static_cast<std::uint32_t>(old_pages));
+    c.proc.invalidate(destination, static_cast<std::uint32_t>(new_pages));
+    return static_cast<std::int32_t>(destination);
+}
+
 std::int32_t sys_rt_sigaction(Ctx& c) {
     const std::uint32_t sig = c.a[0];
     if (sig < 1 || sig > 64 || c.a[3] != 8) return -EINVAL;
@@ -1217,7 +1294,11 @@ bool handle_syscall(Process& proc, GuestThread& thread) {
         res = sys_madvise(c);
         break;
     }
-    case NR_mremap: res = -ENOMEM; break;
+    case NR_mremap: {
+        std::lock_guard<std::mutex> lock(proc.mm_mutex());
+        res = sys_mremap(c);
+        break;
+    }
 
     case NR_ARM_set_tls:
         thread.set_tls(c.a[0]);
