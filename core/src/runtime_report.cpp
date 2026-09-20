@@ -204,6 +204,18 @@ void RuntimeReport::note_sleep(const std::string& tid, long long seconds, long l
     if (long_sleeps_.size() > kMaxLongSleeps) long_sleeps_.resize(kMaxLongSleeps);
 }
 
+void RuntimeReport::note_guest_path_open(const std::string& path) {
+    const std::string key = one_line(path, kMaxDetail);
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto& [existing, count] : path_opens_) {
+        if (existing == key) {
+            ++count;
+            return;
+        }
+    }
+    if (path_opens_.size() < kMaxPathOpens) path_opens_.emplace_back(key, 1);
+}
+
 void RuntimeReport::note_asset_open_failed(const std::string& name) {
     const std::string key = one_line(name, kMaxDetail);
     std::lock_guard<std::mutex> lock(mutex_);
@@ -638,6 +650,17 @@ std::string RuntimeReport::text() const {
         }
         if (shown == 0) out += " (none)";
         out += " total=" + std::to_string(total) + '\n';
+    }
+
+    // Only repeated opens: a single open of each path is normal startup noise, but the same path
+    // opened over and over is a retry loop.
+    {
+        std::size_t n = 0;
+        for (const auto& [path, count] : path_opens_) {
+            if (count < 2) continue;
+            out += "path-repeat-" + std::to_string(++n) + ": " + path + " x" + std::to_string(count) +
+                   '\n';
+        }
     }
 
     for (std::size_t i = 0; i < failed_assets_.size(); ++i) {

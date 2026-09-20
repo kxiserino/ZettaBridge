@@ -113,6 +113,11 @@ public:
     static constexpr std::size_t kMaxFailedOpens = 4;
     void note_guest_open(const std::string& path);
     void note_guest_open_failed(const std::string& path, int error);
+    // Every distinct path the guest opens, with a count, at most kMaxPathOpens of them. A guest
+    // stuck in a resolve-and-map loop reopens the same path, which the filtered lists above hide
+    // because they only keep libraries and assets.
+    static constexpr std::size_t kMaxPathOpens = 48;
+    void note_guest_path_open(const std::string& path);
 
     // Signal trace: the last kMaxSignalEvents posts (kill/tkill/tgkill) and park/suspend events,
     // in order. A stop-the-world freeze leaves the posted signal with no matching delivery, which
@@ -237,6 +242,7 @@ private:
     std::atomic<std::uint64_t> processor_ids_exhausted_{0};
     std::vector<std::string> long_sleeps_;
     std::vector<std::pair<std::string, std::uint64_t>> failed_assets_;
+    std::vector<std::pair<std::string, std::uint64_t>> path_opens_;
     struct SyscallTraceEntry {
         std::atomic<std::int32_t> tid{0};
         std::atomic<std::uint32_t> number{0};
