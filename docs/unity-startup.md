@@ -28,6 +28,88 @@ swaps) for this client. The client is a private-server build and no
 server/account has been supplied, so past the age gate is not assessed. Do not
 claim a working game.
 
+## In-game stall: what is known after the 2026-09-20 session
+
+The guest still stalls intermittently during the client's start-up, and two
+separate things are involved. Both are recorded here because the first one is
+easy to mistake for the second.
+
+### The OS freezes the app (verified)
+
+OnePlus's background freezer stops the whole `:guest` process on the start-up
+resize, and it never unfreezes:
+
+```text
+OPBF: setCGroupState():tofreeze=true, uid:10328 pkg:com.zettabridge.launcher  reason:reportResized
+/dev/freezer/10328/freezer.state = FROZEN     (every thread in state D, zero syscalls)
+```
+
+That is the "game goes dead and never comes back" symptom, and it is not the
+translator. Whitelisting the launcher stops it:
+
+```bash
+adb shell su -c 'cmd deviceidle whitelist +com.zettabridge.launcher'
+```
+
+After that `freezer.state` stays `THAWED`. The launcher should request the
+exemption itself instead of relying on the user.
+
+### The underlying stall: the guest re-resolves libil2cpp
+
+With the freezer out of the way the stall is reproducible and readable. The
+client loads five libraries, renders a few dozen frames, then stops, and the
+report's repeated-path list names the loop:
+
+```text
+path-repeat-1: .../ac.kanto.client/base.apk                      x638
+path-repeat-2: .../lib/libil2cpp.so                              x415
+path-repeat-3: .../zb/guest/lib/libil2cpp.so                     x414
+path-repeat-5: .../assets/bin/Data/sharedassets0.resource.split0  x30
+```
+
+So the guest linker re-resolves `libil2cpp.so` hundreds of times and re-opens the
+APK, rather than failing one `dlopen`. A live `debuggerd -b` shows several
+threads inside `Process::record_file_mapping` (`vector<Process::FileMapping*>`
+inserts) and one in the runtime's `serve()`. `count-clone-thread-calls: 65` and
+`count-borrow-calls: 6` rule out our own thread or carrier creation as the storm.
+
+### Diagnostics added for this (all in the runtime report)
+
+`watch-freeze` and `watch-freeze-thread-*` (every thread's guest backtrace when GL
+host calls stop), `watch-freeze-gl-thread-*` (the render thread), `gl-count-*`
+(the busiest GL calls), `jni-lookup-*`, `signal-*` (a rolling window of posts and
+`sigsuspend` enter/leave), `syscall-trace-*` (the last 40 syscalls with
+arguments), `count-*` (named counters: clone/borrow calls), `path-repeat-*`,
+`asset-open-failed-*`, `long-sleep-*`, `threads-mutex-owner`, `processor-ids` and
+`processor-ids-exhausted`, `jni-carrier-*`.
+
+`tools/symbolize_il2cpp.py` turns the guest's `libil2cpp.so` offsets into names
+using the `SymbolMap-ARMv7` and `global-metadata.dat` the client ships (the
+metadata method record is 56 bytes, and each method spans two contiguous
+SymbolMap records). Our own frames can be symbolized by relinking
+`libzbridge.so` without `-Wl,--strip-all`, which has identical layout, and
+running `llvm-addr2line` on the `debuggerd` output.
+
+### Fixes landed while chasing this
+
+`mremap` implemented (was a hard `-ENOMEM`, which made guest libc log
+`__cxa_atexit: mmap/mremap failed ... Out of memory` on every launch);
+`epoll_event` translated between the 32-bit guest (12 bytes, packed) and the
+64-bit host (16 bytes), without which the guest read every event's fd out of
+padding; the scheduler syscalls Unity uses (`sched_getparam`, `sched_setparam`,
+`sched_setscheduler`, `sched_get_priority_max/min`, previously `-ENOSYS`); the
+signal reader-wait bounded so thread teardown cannot hang forever; the JIT
+processor-id pool raised from 256 to 1024 with a high-water report.
+
+### Ruled out with evidence
+
+Lost GC signal wake (the signal trace ends in a clean resume), OOM, crash,
+unimplemented host and syscalls, GL errors, ANR, the thread-registry mutex being
+held (`(free)` at every freeze), long guest sleeps, failed asset opens,
+processor-id exhaustion (high-water 111/1024), carrier supply (nine borrows,
+pool one, no timeouts), and bridge throughput (about 44 fps, `UnityMain` mostly
+sleeping).
+
 ## Checks
 
 - Sensor regression failed to link against the original guest library, then passed
