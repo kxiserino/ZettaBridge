@@ -46,7 +46,12 @@ public:
     static constexpr std::uint32_t kMmapLimit = 0xFE000000;
     // A PIE main executable is placed below this address.
     static constexpr std::uint32_t kExecutableLimit = 0x40000000;
-    static constexpr std::size_t kMaxThreads = 256;
+    // One processor id per live GuestThread, and a borrower lease costs two (its carrier and the
+    // borrower). The client runs well over a hundred threads and borrows a carrier for every Java
+    // ->native call, so a pool of 256 is close enough to be hit: exhaustion makes clone_thread
+    // return EAGAIN and create_borrower return null, which stalls whatever was creating threads or
+    // calling native. The pool is a bitset plus two small arrays in the exclusive monitor.
+    static constexpr std::size_t kMaxThreads = 1024;
 
     Process();
     ~Process();
@@ -226,6 +231,7 @@ private:
     std::vector<GuestThread*> threads_;
     std::vector<GuestThread*> borrowers_;
     std::bitset<kMaxThreads> processor_ids_;
+    std::size_t processor_id_high_water_ = 0;
 
     std::mutex mm_mutex_;
     std::mutex signal_mutex_;

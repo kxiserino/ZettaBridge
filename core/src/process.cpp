@@ -359,9 +359,17 @@ int Process::allocate_processor_id() {
     for (std::size_t i = 0; i < processor_ids_.size(); ++i) {
         if (!processor_ids_.test(i)) {
             processor_ids_.set(i);
+            const std::size_t used = processor_ids_.count();
+            if (used > processor_id_high_water_) {
+                processor_id_high_water_ = used;
+                runtime_report().note_processor_ids(used, kMaxThreads);
+            }
             return static_cast<int>(i);
         }
     }
+    // Thread creation and Java->native calls both fail cleanly at this point, so the guest sees
+    // EAGAIN or a native call that never ran. Record it: the report is the only trace.
+    runtime_report().note_processor_ids_exhausted(kMaxThreads);
     return -1;
 }
 

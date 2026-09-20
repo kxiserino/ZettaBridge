@@ -649,6 +649,17 @@ std::string RuntimeReport::text() const {
         out += "long-sleep-" + std::to_string(i + 1) + ": " + long_sleeps_[i] + '\n';
     }
 
+    out += "processor-ids: ";
+    out += std::to_string(processor_ids_used_.load(std::memory_order_relaxed)) + "/" +
+           std::to_string(processor_ids_limit_.load(std::memory_order_relaxed));
+    out += '\n';
+    {
+        const std::uint64_t exhausted = processor_ids_exhausted_.load(std::memory_order_relaxed);
+        if (exhausted != 0) {
+            out += "processor-ids-exhausted: " + std::to_string(exhausted) + '\n';
+        }
+    }
+
     out += "threads-mutex-owner: ";
     {
         const std::int32_t owner = threads_mutex_owner_.load(std::memory_order_relaxed);

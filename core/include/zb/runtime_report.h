@@ -67,6 +67,17 @@ public:
     // that burns kernel time. Lock-free relaxed add on the hot path.
     static constexpr std::size_t kMaxSyscallNumbers = 512;
     void note_syscall(std::uint32_t number);
+    // Highest number of JIT processor ids in use, against the pool size, and how often the pool was
+    // found empty. Exhaustion makes thread creation and Java->native calls fail cleanly, which is
+    // otherwise invisible.
+    void note_processor_ids(std::uint64_t used, std::uint64_t limit) {
+        processor_ids_used_.store(used, std::memory_order_relaxed);
+        processor_ids_limit_.store(limit, std::memory_order_relaxed);
+    }
+    void note_processor_ids_exhausted(std::uint64_t limit) {
+        processor_ids_limit_.store(limit, std::memory_order_relaxed);
+        processor_ids_exhausted_.fetch_add(1, std::memory_order_relaxed);
+    }
     // Guest nanosleeps longer than a second, longest first, at most kMaxLongSleeps of them. A
     // guest that parks forever on an absurd sleep computed from a bad clock shows up here.
     static constexpr std::size_t kMaxLongSleeps = 8;
@@ -221,6 +232,9 @@ private:
     std::string exit_reason_;
     std::array<std::atomic<std::uint64_t>, kMaxSyscallNumbers> syscall_counts_{};
     std::atomic<std::int32_t> threads_mutex_owner_{0};
+    std::atomic<std::uint64_t> processor_ids_used_{0};
+    std::atomic<std::uint64_t> processor_ids_limit_{0};
+    std::atomic<std::uint64_t> processor_ids_exhausted_{0};
     std::vector<std::string> long_sleeps_;
     std::vector<std::pair<std::string, std::uint64_t>> failed_assets_;
     struct SyscallTraceEntry {
