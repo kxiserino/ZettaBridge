@@ -445,11 +445,22 @@ std::unique_ptr<LibraryRuntime::Carrier> LibraryRuntime::borrow(std::string& err
         error = "the calling host thread already runs guest code; use call_on_current";
         return nullptr;
     }
+    // Every Java->native call borrows a carrier, and the lease both spawns one and waits up to ten
+    // seconds for any carrier to park. A borrow that times out fails the native call, so count
+    // attempts, timeouts and the pooled count: a client stalled on carrier supply looks exactly
+    // like one stalled inside its own init.
+    static std::atomic<std::uint64_t> borrows{0};
+    static std::atomic<std::uint64_t> timeouts{0};
+    runtime_report().note_jni_detail("carrier-borrows",
+                                     std::to_string(borrows.fetch_add(1, std::memory_order_relaxed) + 1),
+                                     true);
+
     auto command = std::make_shared<Command>();
     command->kind = Command::Kind::SpawnCarrier;
     Response response = impl_->submit(std::move(command));
     if (!response.ok) {
         error = std::move(response.error);
+        runtime_report().note_jni_detail("carrier-last-error", error, true);
         return nullptr;
     }
 
@@ -458,8 +469,13 @@ std::unique_ptr<LibraryRuntime::Carrier> LibraryRuntime::borrow(std::string& err
         std::unique_lock<std::mutex> lock(impl_->mutex);
         impl_->carrier_cv.wait_for(lock, kCarrierParkTimeout,
                                    [&] { return !impl_->available.empty() || impl_->finished; });
+        runtime_report().note_jni_detail("carrier-pool", std::to_string(impl_->available.size()), true);
         if (impl_->available.empty()) {
             error = impl_->finished ? "zbhost exited" : "guest carrier did not park within 10000 ms";
+            runtime_report().note_jni_detail(
+                "carrier-timeouts",
+                std::to_string(timeouts.fetch_add(1, std::memory_order_relaxed) + 1), true);
+            runtime_report().note_jni_detail("carrier-last-error", error, true);
             return nullptr;
         }
         record = impl_->available.front();
