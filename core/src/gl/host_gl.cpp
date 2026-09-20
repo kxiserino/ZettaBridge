@@ -56,9 +56,11 @@ void HostGl::reject(Call& call, GLenum error, const char* reason) {
     const std::uint64_t number = ++rejections;
     runtime_report().note_gl_detail("rejections", std::to_string(number), true);
     if (number <= 4) {
-        char text[256];
-        std::snprintf(text, sizeof text, "%s: %s args=0x%x,0x%x,0x%x,0x%x", name, reason, call.arg(0),
-                      call.arg(1), call.arg(2), call.arg(3));
+        char text[320];
+        std::snprintf(text, sizeof text,
+                      "%s: %s args=0x%x,0x%x,0x%x,0x%x,0x%x,0x%x,0x%x,0x%x,0x%x", name, reason,
+                      call.arg(0), call.arg(1), call.arg(2), call.arg(3), call.arg(4), call.arg(5),
+                      call.arg(6), call.arg(7), call.arg(8));
         runtime_report().note_gl_detail("rejection-" + std::to_string(number), text, false);
     }
     backend_.set_error(error);
@@ -88,7 +90,7 @@ bool HostGl::handle_host_call(std::uint32_t index, GuestThread& thread) {
             thread.regs()[2], thread.regs()[3]);
     }
     const std::uint64_t host_tid = static_cast<std::uint64_t>(::syscall(SYS_gettid));
-    runtime_report().note_gl_call(name, host_tid);
+    runtime_report().note_gl_call_index(index, name, host_tid);
     const std::uint64_t egl_generation = runtime_report().egl_current_generation();
     if (egl_generation != gl_thread_sampled_generation_) {
         gl_thread_sampled_generation_ = egl_generation;

@@ -81,6 +81,18 @@ public:
     // One GL host call, always counted; the first call also records its function name and the
     // calling host thread id (gettid()).
     void note_gl_call(const char* function, std::uint64_t host_tid);
+    // Same, but also accumulates a per-function counter so the report shows where the guest's
+    // GL host calls actually go (the bridge-traffic breakdown).
+    void note_gl_call_index(std::uint32_t index, const char* function, std::uint64_t host_tid);
+    // Host time (milliseconds, steady clock) of the most recent GL host call, 0 when none has
+    // happened yet, and the host thread that made it. A stale value means the render loop has
+    // stopped, which is how a freeze is detected without any guest cooperation.
+    std::uint64_t last_gl_call_millis() const {
+        return gl_last_call_millis_.load(std::memory_order_relaxed);
+    }
+    std::uint64_t gl_last_call_tid() const {
+        return gl_last_call_tid_.load(std::memory_order_relaxed);
+    }
     // Whether eglGetCurrentContext() != EGL_NO_CONTEXT on the thread of the first GL call.
     // Recorded once; later calls are ignored.
     void note_gl_egl_context(bool current);
@@ -187,6 +199,10 @@ private:
     std::vector<std::pair<std::string, int>> failed_opens_;
 
     std::uint64_t gl_call_total_ = 0;
+    static constexpr std::size_t kMaxGlCallIndices = 384;
+    std::array<std::atomic<std::uint64_t>, kMaxGlCallIndices> gl_call_counts_{};
+    std::atomic<std::uint64_t> gl_last_call_millis_{0};
+    std::atomic<std::uint64_t> gl_last_call_tid_{0};
     std::string gl_first_call_function_;
     std::uint64_t gl_first_call_tid_ = 0;
     bool gl_egl_context_known_ = false;
@@ -203,7 +219,7 @@ private:
     std::vector<std::pair<std::string, std::string>> crash_details_;
     static constexpr std::size_t kMaxJniDetails = 16;
     std::vector<std::pair<std::string, std::string>> jni_details_;
-    static constexpr std::size_t kMaxWatchDetails = 24;
+    static constexpr std::size_t kMaxWatchDetails = 40;
     std::vector<std::pair<std::string, std::string>> watch_details_;
     static constexpr std::size_t kMaxLooperDetails = 16;
     std::vector<std::pair<std::string, std::string>> looper_details_;

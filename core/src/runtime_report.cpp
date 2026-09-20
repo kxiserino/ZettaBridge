@@ -1,6 +1,7 @@
 #include "zb/runtime_report.h"
 
 #include <algorithm>
+#include <chrono>
 
 #include <fcntl.h>
 #include <unistd.h>
@@ -10,6 +11,9 @@
 #include <cstring>
 #include <utility>
 
+#include <vector>
+
+#include "zb/gl_hostcalls.h"
 #include "zb/log.h"
 #include "zb/syscalls.h"
 
@@ -202,7 +206,19 @@ void RuntimeReport::note_syscall(std::uint32_t number) {
     if (number < kMaxSyscallNumbers) syscall_counts_[number].fetch_add(1, std::memory_order_relaxed);
 }
 
+void RuntimeReport::note_gl_call_index(std::uint32_t index, const char* function,
+                                       std::uint64_t host_tid) {
+    if (index < kMaxGlCallIndices) gl_call_counts_[index].fetch_add(1, std::memory_order_relaxed);
+    note_gl_call(function, host_tid);
+}
+
 void RuntimeReport::note_gl_call(const char* function, std::uint64_t host_tid) {
+    gl_last_call_millis_.store(
+        static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                       std::chrono::steady_clock::now().time_since_epoch())
+                                       .count()),
+        std::memory_order_relaxed);
+    gl_last_call_tid_.store(host_tid, std::memory_order_relaxed);
     bool structural = false;
     std::shared_ptr<Observer> observer;
     {
@@ -594,6 +610,30 @@ std::string RuntimeReport::text() const {
         out += gl_error_function_ + " " + hex;
     }
     out += '\n';
+    // The bridge-traffic breakdown: the busiest GL functions, so the per-call overhead can be
+    // aimed at the calls the guest actually makes most.
+    {
+        struct Entry {
+            std::uint32_t index;
+            std::uint64_t count;
+        };
+        std::vector<Entry> entries;
+        for (std::uint32_t index = 0; index < kMaxGlCallIndices; ++index) {
+            const std::uint64_t count = gl_call_counts_[index].load(std::memory_order_relaxed);
+            if (count != 0) entries.push_back({index, count});
+        }
+        std::sort(entries.begin(), entries.end(), [](const Entry& a, const Entry& b) {
+            return a.count != b.count ? a.count > b.count : a.index < b.index;
+        });
+        if (entries.size() > 12) entries.resize(12);
+        for (const Entry& entry : entries) {
+            out += "gl-count-";
+            out += std::to_string(entry.index);
+            out += ": ";
+            out += zb::gl_host_call_name(entry.index);
+            out += " x" + std::to_string(entry.count) + '\n';
+        }
+    }
     for (const auto& [key, value] : gl_details_) out += "gl-" + key + ": " + value + '\n';
 
     for (const auto& [key, value] : egl_objects_) out += "egl-" + key + ": " + value + '\n';

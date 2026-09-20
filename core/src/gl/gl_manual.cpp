@@ -376,11 +376,13 @@ std::optional<std::uint64_t> gl_pixel_bytes(GLenum format, GLenum type, GLsizei 
         case 0x1402:  // GL_SHORT
         case 0x1403:  // GL_UNSIGNED_SHORT
         case 0x140B:  // GL_HALF_FLOAT
+        case 0x8D61:  // GL_HALF_FLOAT_OES (OES_texture_half_float, the GLES2 spelling)
             component_bytes = 2;
             break;
         case 0x1404:  // GL_INT
         case 0x1405:  // GL_UNSIGNED_INT
         case 0x1406:  // GL_FLOAT
+        case 0x140C:  // GL_FIXED
             component_bytes = 4;
             break;
         default:
