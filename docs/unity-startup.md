@@ -130,6 +130,16 @@ and `AT_PAGESZ` all agree on 4 KiB or 16 KiB as the device requires.
 `kMmap2PageSize` stays 4096 because the 32-bit `mmap2` ABI fixes its offset unit
 there whatever the host page size is. On a 4 KiB device nothing changes.
 
+## Getting a report off a user's phone (2026-09-20)
+
+A package's own `Android/data` directory is hidden from file managers and MTP on
+Android 11+, and reaching it otherwise needs root, so a user asked for the
+runtime report cannot send it. `Diagnostics.exportReports` copies
+`zb-runtime-report.txt` and `zb-errors.txt` into the shared **Downloads**
+collection through MediaStore at start-up, which needs no permission and puts
+them somewhere the Files app can share. The wrapper's start-up breadcrumbs
+(`boot: bundled=... pageSize=...`) go to the same place.
+
 ## Checks
 
 - Sensor regression failed to link against the original guest library, then passed

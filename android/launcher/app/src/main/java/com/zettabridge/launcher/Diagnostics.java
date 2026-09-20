@@ -2,14 +2,21 @@ package com.zettabridge.launcher;
 
 import android.content.ClipData;
 import android.content.ClipboardManager;
+import android.content.ContentValues;
 import android.content.Context;
+import android.net.Uri;
+import android.os.Build;
+import android.provider.MediaStore;
 import android.util.Log;
 
 import com.zettabridge.core.ZBridge;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.text.SimpleDateFormat;
@@ -104,6 +111,44 @@ final class Diagnostics {
             }
             if (previous != null) previous.uncaughtException(thread, t);
         });
+    }
+
+    /**
+     * Copy the run's report files into Downloads.
+     *
+     * Android 11 hides a package's own Android/data directory from file managers and MTP, and
+     * reaching it otherwise needs root, so a user who wants to send the report cannot. Downloads
+     * is shared and needs no permission through MediaStore.
+     */
+    static void exportReports(Context context) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return;
+        File dir = context.getExternalFilesDir(null);
+        if (dir == null) return;
+        for (String name : new String[] {"zb-runtime-report.txt", "zb-errors.txt"}) {
+            File source = new File(dir, name);
+            if (!source.isFile()) continue;
+            try {
+                ContentValues values = new ContentValues();
+                values.put(MediaStore.Downloads.DISPLAY_NAME, name);
+                values.put(MediaStore.Downloads.MIME_TYPE, "text/plain");
+                values.put(MediaStore.Downloads.IS_PENDING, 1);
+                Uri item = context.getContentResolver()
+                        .insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+                if (item == null) continue;
+                try (InputStream in = new FileInputStream(source);
+                     OutputStream out = context.getContentResolver().openOutputStream(item)) {
+                    if (out == null) continue;
+                    byte[] buffer = new byte[1 << 13];
+                    int read;
+                    while ((read = in.read(buffer)) > 0) out.write(buffer, 0, read);
+                }
+                values.clear();
+                values.put(MediaStore.Downloads.IS_PENDING, 0);
+                context.getContentResolver().update(item, values, null, null);
+            } catch (Exception e) {
+                Log.w(TAG, "cannot export " + name + ": " + e);
+            }
+        }
     }
 
     /** One line in the same file, for the steps a start-up takes before anything can crash. */

@@ -22,6 +22,9 @@ public class BootActivity extends Activity {
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
+        // Publish the previous run's report where a file manager can reach it, before anything
+        // else can fail: Android/data is hidden from the user and MTP.
+        Diagnostics.exportReports(this);
         boolean bundled = BundledPlugin.present(this);
         // The page size decides whether the translator can map guest memory at all, and it is the
         // one thing a device we cannot hold differs by.
