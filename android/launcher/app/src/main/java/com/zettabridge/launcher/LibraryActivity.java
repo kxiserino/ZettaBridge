@@ -46,7 +46,7 @@ public class LibraryActivity extends Activity {
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
-        requestLocationPermission();
+        Permissions.ensureLocation(this, () -> {});
         // An app the OS is free to freeze looks crashed to the user, so ask before anything runs.
         BatteryOptimization.ensureExempt(this, () -> {});
         int pad = dp(16);
@@ -364,12 +364,10 @@ public class LibraryActivity extends Activity {
     }
 
     /** Location-based plugins read the host LocationManager; ask once on the library screen. */
-    private void requestLocationPermission() {
-        if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
-            return;
-        }
-        requestPermissions(new String[] {Manifest.permission.ACCESS_FINE_LOCATION,
-                Manifest.permission.ACCESS_COARSE_LOCATION}, 1);
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
+        super.onRequestPermissionsResult(requestCode, permissions, results);
+        Permissions.onRequestResult(requestCode);
     }
 
     private int dp(int value) {

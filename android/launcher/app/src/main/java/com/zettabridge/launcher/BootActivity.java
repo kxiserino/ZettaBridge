@@ -28,11 +28,22 @@ public class BootActivity extends Activity {
         boolean bundled = BundledPlugin.present(this);
         // The page size decides whether the translator can map guest memory at all, and it is the
         // one thing a device we cannot hold differs by.
-        Diagnostics.note(this, "boot: bundled=" + bundled + " runtime=" + RuntimeBundle.version(this) + " pageSize="
-                + android.system.Os.sysconf(android.system.OsConstants._SC_PAGESIZE) + " started");
+        android.util.DisplayMetrics metrics = new android.util.DisplayMetrics();
+        getWindowManager().getDefaultDisplay().getRealMetrics(metrics);
+        Diagnostics.note(this, "boot: bundled=" + bundled + " runtime=" + RuntimeBundle.version(this)
+                + " pageSize=" + android.system.Os.sysconf(android.system.OsConstants._SC_PAGESIZE)
+                + " display=" + metrics.widthPixels + "x" + metrics.heightPixels
+                + " started");
         if (bundled) show(status("Starting " + BundledPlugin.displayName(this)));
-        // The exemption is settled before the game starts, so the answer applies to it.
-        BatteryOptimization.ensureExempt(this, this::boot);
+        // Both prompts are settled before the game starts, so the answers apply to it: without the
+        // exemption the OS freezes it, and without location the client shows "GPS signal not found".
+        BatteryOptimization.ensureExempt(this, () -> Permissions.ensureLocation(this, this::boot));
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
+        super.onRequestPermissionsResult(requestCode, permissions, results);
+        Permissions.onRequestResult(requestCode);
     }
 
     private void boot() {

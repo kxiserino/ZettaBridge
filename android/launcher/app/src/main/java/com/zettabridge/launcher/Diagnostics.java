@@ -6,6 +6,7 @@ import android.content.ContentValues;
 import android.content.Context;
 import android.net.Uri;
 import android.os.Build;
+import android.content.SharedPreferences;
 import android.provider.MediaStore;
 import android.util.Log;
 
@@ -127,7 +128,10 @@ final class Diagnostics {
         for (String name : new String[] {"zb-runtime-report.txt", "zb-errors.txt"}) {
             File source = new File(dir, name);
             if (!source.isFile()) continue;
-            try {
+            try (InputStream in = new FileInputStream(source)) {
+                // A fresh Downloads entry per launch. Rewriting one in place did not refresh what a
+                // file manager shows, and a stale copy is worse than a duplicate: the newest entry
+                // is the one that describes the latest run.
                 ContentValues values = new ContentValues();
                 values.put(MediaStore.Downloads.DISPLAY_NAME, name);
                 values.put(MediaStore.Downloads.MIME_TYPE, "text/plain");
@@ -135,12 +139,9 @@ final class Diagnostics {
                 Uri item = context.getContentResolver()
                         .insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
                 if (item == null) continue;
-                try (InputStream in = new FileInputStream(source);
-                     OutputStream out = context.getContentResolver().openOutputStream(item)) {
+                try (OutputStream out = context.getContentResolver().openOutputStream(item)) {
                     if (out == null) continue;
-                    byte[] buffer = new byte[1 << 13];
-                    int read;
-                    while ((read = in.read(buffer)) > 0) out.write(buffer, 0, read);
+                    copy(in, out);
                 }
                 values.clear();
                 values.put(MediaStore.Downloads.IS_PENDING, 0);
@@ -149,6 +150,12 @@ final class Diagnostics {
                 Log.w(TAG, "cannot export " + name + ": " + e);
             }
         }
+    }
+
+    private static void copy(InputStream in, OutputStream out) throws IOException {
+        byte[] buffer = new byte[1 << 13];
+        int read;
+        while ((read = in.read(buffer)) > 0) out.write(buffer, 0, read);
     }
 
     /** One line in the same file, for the steps a start-up takes before anything can crash. */

@@ -200,6 +200,24 @@ uploads.
 `BootActivity` also stamps the runtime bundle version into the breadcrumb
 (`boot: ... runtime=65d5a5cdc9b0 ...`) so a report always says which build made it.
 
+## The wrapper never asked for location (2026-09-20)
+
+A Pixel 11 showed "GPS signal not found" and granting `ACCESS_FINE_LOCATION` by
+hand fixed it. The cause is the wrapper: `requestLocationPermission` lived only
+in `LibraryActivity`, and a wrapper build boots straight to `BootActivity`, so
+nothing ever asked. `Permissions.ensureLocation` is shared by both now, and
+`BootActivity` settles it - like the battery exemption - *before* the game
+starts, so the answer applies to the run that needs it.
+
+The boot breadcrumb also carries the display size (`display=1080x2400` on the
+OnePlus 7T) next to the surface size the guest reports, to pin down the
+"cut off top and bottom" on a foldable: the guest's surface was 1080x2342, a
+cover-screen aspect, while the app was on the unfolded display.
+
+`Diagnostics.exportReports` inserts a fresh Downloads entry per launch. Rewriting
+one row in place did not refresh what a file manager shows, so the copy went
+stale; MediaStore numbers the entries and the newest is the latest run.
+
 ## Checks
 
 - Sensor regression failed to link against the original guest library, then passed
