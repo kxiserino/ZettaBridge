@@ -1021,14 +1021,52 @@ std::int32_t sys_recvmsg(Ctx& c) {
     return static_cast<std::int32_t>(n);
 }
 
+// The 32-bit ARM ABI defines struct epoll_event as packed (EPOLL_PACKED): 4 bytes of events
+// followed immediately by 8 bytes of data, 12 in total. The 64-bit host struct has 4 bytes of
+// padding before the 8-byte data, 16 in total. Handing the guest's buffer to the host kernel, as
+// this used to, makes the guest read the fd or pointer out of the padding, so every reported event
+// is attributed to the wrong descriptor and an event loop waits forever. Translate both ways.
+constexpr std::size_t kGuestEpollEventSize = 12;
+
+void write_guest_epoll_event(std::uint8_t* at, std::uint32_t events, std::uint64_t data) {
+    std::memcpy(at, &events, sizeof events);
+    std::memcpy(at + sizeof events, &data, sizeof data);
+}
+
+bool read_guest_epoll_event(GuestMemory& mem, std::uint32_t address, epoll_event& out) {
+    const std::uint8_t* at = mem.host_ptr(address, kGuestEpollEventSize, kPageRead);
+    if (at == nullptr) return false;
+    std::uint32_t events = 0;
+    std::uint64_t data = 0;
+    std::memcpy(&events, at, sizeof events);
+    std::memcpy(&data, at + sizeof events, sizeof data);
+    out = epoll_event{};
+    out.events = events;
+    out.data.u64 = data;
+    return true;
+}
+
 std::int32_t sys_epoll_wait(Ctx& c) {
     const int max_events = static_cast<int>(c.a[2]);
     if (max_events <= 0 || max_events > 65536) return -EINVAL;
-    std::uint8_t* events = c.mem.host_ptr(c.a[1], static_cast<std::uint64_t>(max_events) * sizeof(epoll_event), kPageWrite);
-    if (events == nullptr) return -EFAULT;
+    if (c.mem.host_ptr(c.a[1], static_cast<std::uint64_t>(max_events) * kGuestEpollEventSize, kPageWrite) ==
+        nullptr) {
+        return -EFAULT;
+    }
+    std::vector<epoll_event> host_events(static_cast<std::size_t>(max_events));
     // epoll_pwait's guest signal mask is ignored: guest masks are emulated.
-    return result_of(::epoll_pwait(static_cast<int>(c.a[0]), reinterpret_cast<epoll_event*>(events), max_events,
-                                   static_cast<int>(c.a[3]), nullptr));
+    const int ready = ::epoll_pwait(static_cast<int>(c.a[0]), host_events.data(), max_events,
+                                    static_cast<int>(c.a[3]), nullptr);
+    if (ready < 0) return -errno;
+    std::uint8_t* guest =
+        c.mem.host_ptr(c.a[1], static_cast<std::uint64_t>(ready) * kGuestEpollEventSize, kPageWrite);
+    if (guest == nullptr) return -EFAULT;
+    for (int i = 0; i < ready; ++i) {
+        write_guest_epoll_event(guest + static_cast<std::size_t>(i) * kGuestEpollEventSize,
+                                host_events[static_cast<std::size_t>(i)].events,
+                                host_events[static_cast<std::size_t>(i)].data.u64);
+    }
+    return ready;
 }
 
 bool read_itimerval(GuestMemory& m, std::uint32_t addr, itimerval& out) {
@@ -1382,6 +1420,47 @@ bool handle_syscall(Process& proc, GuestThread& thread) {
     case NR_futex: res = sys_futex(c, false); break;
     case NR_futex_time64: res = sys_futex(c, true); break;
     case NR_sched_yield: res = result_of(::sched_yield()); break;
+    // Unity reads and sets thread scheduling parameters while it sets up its render and job
+    // threads. Returning -ENOSYS (the default) made sched_get_priority_max/min return an errno as
+    // the priority, so answer these the way bionic expects. bionic's sched_param is a single int;
+    // the host's larger struct never reaches the guest.
+    case NR_sched_get_priority_max:
+        res = result_of(::sched_get_priority_max(static_cast<int>(c.a[0])));
+        break;
+    case NR_sched_get_priority_min:
+        res = result_of(::sched_get_priority_min(static_cast<int>(c.a[0])));
+        break;
+    case NR_sched_getparam: {
+        sched_param host{};
+        if (::sched_getparam(0, &host) != 0) {
+            res = -errno;
+            break;
+        }
+        const std::int32_t priority = host.sched_priority;
+        res = write_guest(c.mem, c.a[1], priority) ? 0 : -EFAULT;
+        break;
+    }
+    case NR_sched_setparam:
+    case NR_sched_setscheduler: {
+        sched_param host{};
+        bool have_priority = false;
+        // getparam/setscheduler put the struct in a different argument; setparam always has one.
+        const std::uint32_t address = c.a[nr == NR_sched_setscheduler ? 2 : 1];
+        if (address != 0) {
+            std::int32_t priority = 0;
+            if (!read_guest(c.mem, address, priority)) {
+                res = -EFAULT;
+                break;
+            }
+            host.sched_priority = priority;
+            have_priority = true;
+        }
+        res = nr == NR_sched_setscheduler
+                  ? result_of(::sched_setscheduler(0, static_cast<int>(c.a[1]),
+                                                   have_priority ? &host : nullptr))
+                  : result_of(::sched_setparam(0, have_priority ? &host : nullptr));
+        break;
+    }
     case NR_sched_getaffinity: {
         std::uint8_t* mask = c.mem.host_ptr(c.a[2], c.a[1], kPageWrite);
         res = !mask ? -EFAULT : result_of(::syscall(SYS_sched_getaffinity, static_cast<pid_t>(c.a[0]), c.a[1], mask));
@@ -1531,13 +1610,17 @@ bool handle_syscall(Process& proc, GuestThread& thread) {
     case NR_eventfd2: res = result_of(::syscall(SYS_eventfd2, c.a[0], static_cast<int>(c.a[1]))); break;
     case NR_epoll_create1: res = result_of(::epoll_create1(static_cast<int>(c.a[0]))); break;
     case NR_epoll_ctl: {
-        std::uint8_t* event = c.a[3] != 0 ? c.mem.host_ptr(c.a[3], sizeof(epoll_event), kPageRead) : nullptr;
-        if (c.a[3] != 0 && !event) {
-            res = -EFAULT;
-        } else {
-            res = result_of(::epoll_ctl(static_cast<int>(c.a[0]), static_cast<int>(c.a[1]), static_cast<int>(c.a[2]),
-                                        reinterpret_cast<epoll_event*>(event)));
+        epoll_event host{};
+        epoll_event* event = nullptr;
+        if (c.a[3] != 0) {
+            if (!read_guest_epoll_event(c.mem, c.a[3], host)) {
+                res = -EFAULT;
+                break;
+            }
+            event = &host;
         }
+        res = result_of(::epoll_ctl(static_cast<int>(c.a[0]), static_cast<int>(c.a[1]),
+                                    static_cast<int>(c.a[2]), event));
         break;
     }
     case NR_epoll_wait:
