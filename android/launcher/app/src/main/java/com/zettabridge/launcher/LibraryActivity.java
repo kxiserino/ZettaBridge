@@ -47,6 +47,8 @@ public class LibraryActivity extends Activity {
     protected void onCreate(Bundle state) {
         super.onCreate(state);
         requestLocationPermission();
+        // An app the OS is free to freeze looks crashed to the user, so ask before anything runs.
+        BatteryOptimization.ensureExempt(this);
         int pad = dp(16);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
