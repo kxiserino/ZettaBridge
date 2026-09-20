@@ -215,16 +215,19 @@ void RuntimeReport::note_counter(const std::string& key, std::uint64_t value) {
     counters_.emplace_back(key, value);
 }
 
-void RuntimeReport::note_guest_path_open(const std::string& path) {
+void RuntimeReport::note_guest_path_open(const std::string& path, bool succeeded) {
     const std::string key = one_line(path, kMaxDetail);
     std::lock_guard<std::mutex> lock(mutex_);
-    for (auto& [existing, count] : path_opens_) {
-        if (existing == key) {
-            ++count;
+    for (PathOpenCounts& entry : path_opens_) {
+        if (entry.path == key) {
+            ++entry.opens;
+            if (!succeeded) ++entry.failures;
             return;
         }
     }
-    if (path_opens_.size() < kMaxPathOpens) path_opens_.emplace_back(key, 1);
+    if (path_opens_.size() < kMaxPathOpens) {
+        path_opens_.push_back(PathOpenCounts{key, 1, succeeded ? 0u : 1u});
+    }
 }
 
 void RuntimeReport::note_asset_open_failed(const std::string& name) {
@@ -670,16 +673,17 @@ std::string RuntimeReport::text() const {
     // The most repeated opens. A single open of each path is normal startup noise, but the same
     // path opened over and over is a retry or search loop, and its name says which one.
     {
-        std::vector<std::pair<std::string, std::uint64_t>> repeated;
-        for (const auto& entry : path_opens_) {
-            if (entry.second >= 2) repeated.push_back(entry);
+        std::vector<const PathOpenCounts*> repeated;
+        for (const PathOpenCounts& entry : path_opens_) {
+            if (entry.opens >= 2) repeated.push_back(&entry);
         }
         std::sort(repeated.begin(), repeated.end(),
-                  [](const auto& a, const auto& b) { return a.second > b.second; });
+                  [](const PathOpenCounts* a, const PathOpenCounts* b) { return a->opens > b->opens; });
         if (repeated.size() > 16) repeated.resize(16);
         for (std::size_t i = 0; i < repeated.size(); ++i) {
-            out += "path-repeat-" + std::to_string(i + 1) + ": " + repeated[i].first + " x" +
-                   std::to_string(repeated[i].second) + '\n';
+            out += "path-repeat-" + std::to_string(i + 1) + ": " + repeated[i]->path + " x" +
+                   std::to_string(repeated[i]->opens) + " failed=" +
+                   std::to_string(repeated[i]->failures) + '\n';
         }
     }
 

@@ -1244,15 +1244,15 @@ bool handle_syscall(Process& proc, GuestThread& thread) {
     case NR_openat: {
         const char* guest_path = guest_cstr(c.mem, c.a[1]);
         const bool watched = open_worth_watching(guest_path);
-        if (guest_path != nullptr) runtime_report().note_guest_path_open(guest_path);
         if (guest_path != nullptr && proc.open_synthetic_file(guest_path, static_cast<int>(c.a[2]), res)) {
             if (watched) note_watched_open(guest_path, res);
-            break;
+        } else {
+            res = sys_path_call(c, 1, [](Ctx& x, const char* p) -> long {
+                return ::syscall(SYS_openat, static_cast<int>(x.a[0]), p, static_cast<int>(x.a[2]), static_cast<mode_t>(x.a[3]));
+            });
+            if (watched) note_watched_open(guest_path, res);
         }
-        res = sys_path_call(c, 1, [](Ctx& x, const char* p) -> long {
-            return ::syscall(SYS_openat, static_cast<int>(x.a[0]), p, static_cast<int>(x.a[2]), static_cast<mode_t>(x.a[3]));
-        });
-        if (watched) note_watched_open(guest_path, res);
+        if (guest_path != nullptr) runtime_report().note_guest_path_open(guest_path, res >= 0);
         break;
     }
     case NR_faccessat:

@@ -119,7 +119,10 @@ public:
     // stuck in a resolve-and-map loop reopens the same path, which the filtered lists above hide
     // because they only keep libraries and assets.
     static constexpr std::size_t kMaxPathOpens = 512;
-    void note_guest_path_open(const std::string& path);
+    // `succeeded` is whether the open actually produced a file descriptor. A path opened hundreds
+    // of times and always failing is a link-search miss; one that succeeds is something re-opening
+    // a file it already has.
+    void note_guest_path_open(const std::string& path, bool succeeded);
 
     // Signal trace: the last kMaxSignalEvents posts (kill/tkill/tgkill) and park/suspend events,
     // in order. A stop-the-world freeze leaves the posted signal with no matching delivery, which
@@ -244,7 +247,12 @@ private:
     std::atomic<std::uint64_t> processor_ids_exhausted_{0};
     std::vector<std::string> long_sleeps_;
     std::vector<std::pair<std::string, std::uint64_t>> failed_assets_;
-    std::vector<std::pair<std::string, std::uint64_t>> path_opens_;
+    struct PathOpenCounts {
+        std::string path;
+        std::uint64_t opens = 0;
+        std::uint64_t failures = 0;
+    };
+    std::vector<PathOpenCounts> path_opens_;
     std::vector<std::pair<std::string, std::uint64_t>> counters_;
     struct SyscallTraceEntry {
         std::atomic<std::int32_t> tid{0};
