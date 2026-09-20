@@ -214,6 +214,11 @@ bool Process::first_time(std::uint64_t key) {
 void Process::record_file_mapping(std::uint32_t start, std::uint32_t length, std::uint64_t offset, std::string path,
                                   bool offset_is_vaddr) {
     forget_mappings(start, length);
+    // The base map is what lets an unwound guest address be placed in a library, so report it for
+    // the shared objects only.
+    if (path.size() >= 3 && path.compare(path.size() - 3, 3, ".so") == 0) {
+        runtime_report().note_library_region(start, length, path);
+    }
     file_mappings_.push_back({start, length, offset, std::move(path), offset_is_vaddr});
 }
 
@@ -258,16 +263,29 @@ std::string Process::describe_thread_stack(std::int32_t tid) const {
     std::string out = head;
     std::snprintf(head, sizeof head, " lr=%08x@%s", r[14], describe_address(r[14]).c_str());
     out += head;
-    // sp and fp let the stack be unwound offline with the guest libraries' .ARM.exidx tables,
-    // which is what names a C# frame: the scan below only finds words that look like addresses.
-    std::snprintf(head, sizeof head, " sp=%08x fp=%08x cpsr=%08x", r[13], r[11], thread->cpsr());
+    const std::uint32_t sp = r[13];
+    // sp, fp and 192 words of stack let the chain be unwound offline with the guest libraries'
+    // .ARM.exidx tables (llvm-readelf --unwind decodes them), which is what names a C# frame. The
+    // scan below only finds words that happen to look like addresses, and ARM32 il2cpp keeps no
+    // frame pointer, so it is a rough guess.
+    std::snprintf(head, sizeof head, " sp=%08x fp=%08x cpsr=%08x stack=", r[13], r[11],
+                  thread->cpsr());
     out += head;
+    for (std::uint32_t i = 0; i < 192; ++i) {
+        const std::uint64_t at = static_cast<std::uint64_t>(sp) + 4ull * i;
+        if (at + 4 > kGuestSpaceSize) break;
+        const std::uint8_t* bytes = mem_.host_ptr(static_cast<std::uint32_t>(at), 4, kPageRead);
+        if (bytes == nullptr) break;
+        std::uint32_t word = 0;
+        std::memcpy(&word, bytes, sizeof word);
+        std::snprintf(head, sizeof head, "%08x", word);
+        out += head;
+    }
     // Walk the guest stack for words that name a known file mapping: return addresses of the
     // active call chain, plus stale ones, nearest first. Bounded and allocation-light.
     // A C# call chain is deep, and the first few stack words usually name libc or a libunity
     // trampoline, so the cap is high enough to reach the frames that matter. Duplicates are
     // skipped: a saved register or a stale return address would otherwise pad the chain.
-    const std::uint32_t sp = r[13];
     std::size_t found = 0;
     std::uint32_t previous = 0;
     for (std::uint32_t i = 0; i < 2048; ++i) {

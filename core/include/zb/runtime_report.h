@@ -35,7 +35,7 @@ public:
     // Recorded error and exit texts are folded to one line and cut to this length.
     // Large enough for a full guest backtrace (24 frames of " | pc@file offset 0x..."): the
     // freeze dump is only useful if the whole chain survives.
-    static constexpr std::size_t kMaxDetail = 2400;
+    static constexpr std::size_t kMaxDetail = 4096;
 
     // Called after every change, with the report unlocked. `structural` is true when the report
     // gained a line (a new distinct host call, a load, a JNI_OnLoad, the exit reason) and false
@@ -123,6 +123,11 @@ public:
     // of times and always failing is a link-search miss; one that succeeds is something re-opening
     // a file it already has.
     void note_guest_path_open(const std::string& path, bool succeeded);
+    // Guest library mappings: base address, byte length and path, at most kMaxLibraryRegions of
+    // them. A thread backtrace only names the pc/lr the guest libraries live at; unwound frames are
+    // bare addresses, so the map is what puts them in a library.
+    static constexpr std::size_t kMaxLibraryRegions = 128;
+    void note_library_region(std::uint32_t base, std::uint32_t length, const std::string& path);
 
     // Signal trace: the last kMaxSignalEvents posts (kill/tkill/tgkill) and park/suspend events,
     // in order. A stop-the-world freeze leaves the posted signal with no matching delivery, which
@@ -253,6 +258,12 @@ private:
         std::uint64_t failures = 0;
     };
     std::vector<PathOpenCounts> path_opens_;
+    struct LibraryRegion {
+        std::uint32_t base = 0;
+        std::uint32_t length = 0;
+        std::string path;
+    };
+    std::vector<LibraryRegion> library_regions_;
     std::vector<std::pair<std::string, std::uint64_t>> counters_;
     struct SyscallTraceEntry {
         std::atomic<std::int32_t> tid{0};

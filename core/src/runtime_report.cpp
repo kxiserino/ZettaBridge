@@ -230,6 +230,23 @@ void RuntimeReport::note_guest_path_open(const std::string& path, bool succeeded
     }
 }
 
+void RuntimeReport::note_library_region(std::uint32_t base, std::uint32_t length,
+                                        const std::string& path) {
+    const std::string key = one_line(path, kMaxDetail);
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (LibraryRegion& region : library_regions_) {
+        if (region.path == key) {
+            // Keep the lowest base: a library mapped in several segments reports each one.
+            if (base < region.base) region.base = base;
+            if (base + length > region.base + region.length) region.length = base + length - region.base;
+            return;
+        }
+    }
+    if (library_regions_.size() < kMaxLibraryRegions) {
+        library_regions_.push_back(LibraryRegion{base, length, key});
+    }
+}
+
 void RuntimeReport::note_asset_open_failed(const std::string& name) {
     const std::string key = one_line(name, kMaxDetail);
     std::lock_guard<std::mutex> lock(mutex_);
@@ -664,6 +681,15 @@ std::string RuntimeReport::text() const {
         }
         if (shown == 0) out += " (none)";
         out += " total=" + std::to_string(total) + '\n';
+    }
+
+    for (std::size_t i = 0; i < library_regions_.size(); ++i) {
+        char line[320];
+        std::snprintf(line, sizeof line, "lib-base-%zu: 0x%08x 0x%x %s", i + 1,
+                      library_regions_[i].base, library_regions_[i].length,
+                      library_regions_[i].path.c_str());
+        out += line;
+        out += '\n';
     }
 
     for (const auto& [key, value] : counters_) {
