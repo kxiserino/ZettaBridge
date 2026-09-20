@@ -18,7 +18,11 @@ namespace zb {
 
 namespace {
 
-constexpr std::chrono::milliseconds kCarrierParkTimeout{10000};
+// Three seconds, not ten: ten is exactly ART's finalizer watchdog limit, so a borrow that timed
+// out at ten seconds got the whole :guest process killed for finalizing an object. Failing the
+// borrow sooner is strictly better - the native call returns an error instead of the process
+// dying - and a spawn that has not parked in three seconds is not going to be useful anyway.
+constexpr std::chrono::milliseconds kCarrierParkTimeout{3000};
 
 struct Response {
     bool ok = false;
@@ -265,9 +269,22 @@ struct LibraryRuntime::Impl {
             bool leased = false;
             {
                 std::lock_guard<std::mutex> lock(mutex);
-                if (record->state == ParkedCarrier::State::Released) {
+                const bool released = record->state == ParkedCarrier::State::Released;
+                if (released && finished) {
                     carriers.erase(&thread);
                     break;
+                }
+                if (released) {
+                    // A released lease returns the carrier to the pool rather than destroying it.
+                    // Tearing it down means the next Java->native call spawns a fresh guest thread
+                    // (a JIT and a bionic thread start) and waits up to ten seconds for it to park
+                    // - which is exactly the finalizer watchdog's limit, so a Java thread
+                    // finalizing an object could be killed for a carrier that never arrived.
+                    record->state = ParkedCarrier::State::Available;
+                    if (detached) {
+                        Process::set_current_thread(&thread);
+                        detached = false;
+                    }
                 }
                 if (record->state == ParkedCarrier::State::Available) {
                     if (thread.has_pending_signals(thread.sigmask)) {
@@ -451,17 +468,29 @@ std::unique_ptr<LibraryRuntime::Carrier> LibraryRuntime::borrow(std::string& err
     // like one stalled inside its own init.
     static std::atomic<std::uint64_t> borrows{0};
     static std::atomic<std::uint64_t> timeouts{0};
+    static std::atomic<std::uint64_t> spawns{0};
+    bool pool_has_carrier = false;
     runtime_report().note_jni_detail("carrier-borrows",
                                      std::to_string(borrows.fetch_add(1, std::memory_order_relaxed) + 1),
                                      true);
 
-    auto command = std::make_shared<Command>();
-    command->kind = Command::Kind::SpawnCarrier;
-    Response response = impl_->submit(std::move(command));
-    if (!response.ok) {
-        error = std::move(response.error);
-        runtime_report().note_jni_detail("carrier-last-error", error, true);
-        return nullptr;
+    // Only grow the pool when it is empty: spawning unconditionally made every borrow pay for a
+    // new guest thread and then race the ten-second park timeout.
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        pool_has_carrier = !impl_->available.empty();
+    }
+    if (!pool_has_carrier) {
+        auto command = std::make_shared<Command>();
+        command->kind = Command::Kind::SpawnCarrier;
+        Response response = impl_->submit(std::move(command));
+        if (!response.ok) {
+            error = std::move(response.error);
+            runtime_report().note_jni_detail("carrier-last-error", error, true);
+            return nullptr;
+        }
+        runtime_report().note_jni_detail(
+            "carrier-spawns", std::to_string(spawns.fetch_add(1, std::memory_order_relaxed) + 1), true);
     }
 
     std::shared_ptr<ParkedCarrier> record;
@@ -471,7 +500,7 @@ std::unique_ptr<LibraryRuntime::Carrier> LibraryRuntime::borrow(std::string& err
                                    [&] { return !impl_->available.empty() || impl_->finished; });
         runtime_report().note_jni_detail("carrier-pool", std::to_string(impl_->available.size()), true);
         if (impl_->available.empty()) {
-            error = impl_->finished ? "zbhost exited" : "guest carrier did not park within 10000 ms";
+            error = impl_->finished ? "zbhost exited" : "guest carrier did not park within 3000 ms";
             runtime_report().note_jni_detail(
                 "carrier-timeouts",
                 std::to_string(timeouts.fetch_add(1, std::memory_order_relaxed) + 1), true);

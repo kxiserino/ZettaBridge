@@ -218,6 +218,33 @@ cover-screen aspect, while the app was on the unfolded display.
 one row in place did not refresh what a file manager shows, so the copy went
 stale; MediaStore numbers the entries and the newest is the latest run.
 
+## The carrier lease could kill the guest (2026-09-20)
+
+A Pixel 11 died with ART's finalizer watchdog:
+
+```
+FATAL EXCEPTION: FinalizerWatchdogDaemon
+java.util.concurrent.TimeoutException: com.unity3d.player.ReflectionHelper$1.finalize()
+        timed out after 10 seconds
+    at com.unity3d.player.ReflectionHelper.nativeProxyFinalize(Native Method)
+```
+
+`nativeProxyFinalize` is a Java->native call, so it borrows a carrier, and the
+borrow waited `kCarrierParkTimeout` - **ten seconds, which is exactly ART's
+finalizer watchdog limit**. A borrow that timed out therefore did not merely fail
+the call: it got the whole :guest process killed, and the ten-second stall is what
+"freezes, still up" looked like from outside.
+
+Two changes:
+
+- A released lease returns its carrier to the pool instead of setting it Released
+  and tearing the guest thread down. Destroying it made every Java->native call
+  spawn a fresh guest thread (a JIT and a bionic thread start) and then race the
+  park timeout to use it.
+- The timeout is three seconds. Ten was the worst possible value: it reached the
+  watchdog's threshold exactly, whereas failing the borrow sooner returns an error
+  to the caller and keeps the process alive.
+
 ## Checks
 
 - Sensor regression failed to link against the original guest library, then passed
