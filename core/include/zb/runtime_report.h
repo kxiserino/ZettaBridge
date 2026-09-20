@@ -67,6 +67,15 @@ public:
     // that burns kernel time. Lock-free relaxed add on the hot path.
     static constexpr std::size_t kMaxSyscallNumbers = 512;
     void note_syscall(std::uint32_t number);
+    // The host thread that currently holds the thread-registry mutex, or 0 when it is free. Set by
+    // Process on lock and unlock; a freeze dump that shows threads queued on that lock needs the
+    // holder's id to tell a slow critical section from a lost unlock.
+    void note_threads_mutex_owner(std::int32_t host_tid) {
+        threads_mutex_owner_.store(host_tid, std::memory_order_relaxed);
+    }
+    std::int32_t threads_mutex_owner() const {
+        return threads_mutex_owner_.load(std::memory_order_relaxed);
+    }
     // A rolling window of the most recent syscalls with their first three arguments, whatever the
     // thread. A freeze dump that shows only "everyone is parked in futex" cannot say which futex,
     // fd or timeout; this can.
@@ -201,6 +210,7 @@ private:
     std::uint64_t registered_natives_ = 0;
     std::string exit_reason_;
     std::array<std::atomic<std::uint64_t>, kMaxSyscallNumbers> syscall_counts_{};
+    std::atomic<std::int32_t> threads_mutex_owner_{0};
     struct SyscallTraceEntry {
         std::atomic<std::int32_t> tid{0};
         std::atomic<std::uint32_t> number{0};

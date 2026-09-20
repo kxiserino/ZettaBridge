@@ -24,6 +24,19 @@ class ExclusiveMonitor;
 namespace zb {
 
 // One guest process: its address space, emulated kernel state and threads.
+// A mutex that records which host thread holds it. The freeze dumps showed dozens of guest threads
+// queued on the thread-registry lock without naming its holder, which is the one fact needed to
+// tell a merely slow critical section from a lock that was never released.
+class TrackedMutex {
+public:
+    void lock();
+    void unlock();
+    bool try_lock();
+
+private:
+    std::mutex mutex_;
+};
+
 class Process {
 public:
     using HostCallHandler = std::function<bool(std::uint32_t index, GuestThread& thread)>;
@@ -207,8 +220,9 @@ private:
     std::unique_ptr<Dynarmic::ExclusiveMonitor> monitor_;
     std::unique_ptr<GuestThread> main_;
 
-    mutable std::mutex threads_mutex_;
-    std::condition_variable threads_cv_;
+    mutable TrackedMutex threads_mutex_;
+    // _any, not _v: the condition waits on TrackedMutex, which std::condition_variable cannot take.
+    std::condition_variable_any threads_cv_;
     std::vector<GuestThread*> threads_;
     std::vector<GuestThread*> borrowers_;
     std::bitset<kMaxThreads> processor_ids_;

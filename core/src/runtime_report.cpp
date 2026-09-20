@@ -614,6 +614,13 @@ std::string RuntimeReport::text() const {
         out += " total=" + std::to_string(total) + '\n';
     }
 
+    out += "threads-mutex-owner: ";
+    {
+        const std::int32_t owner = threads_mutex_owner_.load(std::memory_order_relaxed);
+        out += owner == 0 ? std::string("(free)") : std::to_string(owner);
+    }
+    out += '\n';
+
     for (std::size_t i = 0; i < signal_events_.size(); ++i) {
         out += "signal-" + std::to_string(i + 1) + ": " + signal_events_[i] + '\n';
     }

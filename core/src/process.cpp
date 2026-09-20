@@ -178,6 +178,22 @@ Process::~Process() {
     set_guest_stack_reporter(nullptr);
 }
 
+void TrackedMutex::lock() {
+    mutex_.lock();
+    runtime_report().note_threads_mutex_owner(static_cast<std::int32_t>(::syscall(SYS_gettid)));
+}
+
+void TrackedMutex::unlock() {
+    runtime_report().note_threads_mutex_owner(0);
+    mutex_.unlock();
+}
+
+bool TrackedMutex::try_lock() {
+    if (!mutex_.try_lock()) return false;
+    runtime_report().note_threads_mutex_owner(static_cast<std::int32_t>(::syscall(SYS_gettid)));
+    return true;
+}
+
 void Process::request_exit(int status) {
     exit_status_ = status;
     exiting_ = true;
@@ -185,7 +201,7 @@ void Process::request_exit(int status) {
 }
 
 void Process::invalidate(std::uint32_t addr, std::uint32_t len) {
-    std::lock_guard<std::mutex> lock(threads_mutex_);
+    std::lock_guard<TrackedMutex> lock(threads_mutex_);
     for (GuestThread* t : threads_) t->invalidate(addr, len);
     for (GuestThread* t : borrowers_) t->invalidate(addr, len);
 }
@@ -326,12 +342,12 @@ std::string Process::translate_path(const char* guest_path) const {
 }
 
 std::size_t Process::thread_count() const {
-    std::lock_guard<std::mutex> lock(threads_mutex_);
+    std::lock_guard<TrackedMutex> lock(threads_mutex_);
     return threads_.size();
 }
 
 bool Process::is_borrower(const GuestThread& thread) const {
-    std::lock_guard<std::mutex> lock(threads_mutex_);
+    std::lock_guard<TrackedMutex> lock(threads_mutex_);
     for (const GuestThread* t : borrowers_) {
         if (t == &thread) return true;
     }
@@ -339,7 +355,7 @@ bool Process::is_borrower(const GuestThread& thread) const {
 }
 
 int Process::allocate_processor_id() {
-    std::lock_guard<std::mutex> lock(threads_mutex_);
+    std::lock_guard<TrackedMutex> lock(threads_mutex_);
     for (std::size_t i = 0; i < processor_ids_.size(); ++i) {
         if (!processor_ids_.test(i)) {
             processor_ids_.set(i);
@@ -350,7 +366,7 @@ int Process::allocate_processor_id() {
 }
 
 GuestThread* Process::find_thread(std::int32_t tid) {
-    std::lock_guard<std::mutex> lock(threads_mutex_);
+    std::lock_guard<TrackedMutex> lock(threads_mutex_);
     for (GuestThread* t : borrowers_) {
         if (t->tid == tid) return t;
     }
@@ -363,7 +379,7 @@ GuestThread* Process::find_thread(std::int32_t tid) {
 bool Process::post_signal_to(std::int32_t tid, const g::siginfo32& info) {
     // post_signal takes no Process lock (atomics and a futex wake), so holding threads_mutex_
     // here cannot deadlock.
-    std::lock_guard<std::mutex> lock(threads_mutex_);
+    std::lock_guard<TrackedMutex> lock(threads_mutex_);
     for (GuestThread* t : borrowers_) {
         if (t->tid == tid) {
             t->post_signal(info);
@@ -394,7 +410,7 @@ std::unique_ptr<GuestThread> Process::create_borrower(GuestThread& carrier) {
     borrower->host_tid = static_cast<std::int32_t>(::syscall(SYS_gettid));
     borrower->sigmask = carrier.sigmask;
     borrower->altstack = carrier.altstack;
-    std::lock_guard<std::mutex> lock(threads_mutex_);
+    std::lock_guard<TrackedMutex> lock(threads_mutex_);
     borrowers_.push_back(borrower.get());
     return borrower;
 }
@@ -410,7 +426,7 @@ void Process::destroy_borrower(std::unique_ptr<GuestThread> borrower, GuestThrea
     carrier.sigmask = borrower->sigmask;
     carrier.altstack = borrower->altstack;
     {
-        std::lock_guard<std::mutex> lock(threads_mutex_);
+        std::lock_guard<TrackedMutex> lock(threads_mutex_);
         std::erase(borrowers_, borrower.get());
     }
     g::siginfo32 info;
@@ -418,12 +434,12 @@ void Process::destroy_borrower(std::unique_ptr<GuestThread> borrower, GuestThrea
     const std::size_t processor_id = borrower->processor_id();
     monitor_->ClearProcessor(processor_id);
     borrower.reset();
-    std::lock_guard<std::mutex> lock(threads_mutex_);
+    std::lock_guard<TrackedMutex> lock(threads_mutex_);
     processor_ids_.reset(processor_id);
 }
 
 void Process::register_thread(GuestThread* thread) {
-    std::lock_guard<std::mutex> lock(threads_mutex_);
+    std::lock_guard<TrackedMutex> lock(threads_mutex_);
     threads_.push_back(thread);
 }
 
@@ -670,14 +686,14 @@ void Process::unregister_thread(GuestThread& thread) {
     // Waits for in-flight forwarding handlers, so the caller may free the thread afterwards.
     clear_process_signal_target(&thread);
     monitor_->ClearProcessor(thread.processor_id());
-    std::lock_guard<std::mutex> lock(threads_mutex_);
+    std::lock_guard<TrackedMutex> lock(threads_mutex_);
     std::erase(threads_, &thread);
     processor_ids_.reset(thread.processor_id());
     threads_cv_.notify_all();
 }
 
 void Process::wait_for_threads() {
-    std::unique_lock<std::mutex> lock(threads_mutex_);
+    std::unique_lock<TrackedMutex> lock(threads_mutex_);
     threads_cv_.wait(lock, [&] { return threads_.empty(); });
 }
 
