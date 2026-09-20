@@ -140,6 +140,41 @@ collection through MediaStore at start-up, which needs no permission and puts
 them somewhere the Files app can share. The wrapper's start-up breadcrumbs
 (`boot: bundled=... pageSize=...`) go to the same place.
 
+## A NULL GL entry point crashes Unity (2026-09-20)
+
+A Pixel 11 died with `guest SIGILL: jump to non-executable memory at pc 0x00000000`,
+called from `libunity.so+0x52dd1c`, with `r0 = GL_ARRAY_BUFFER`. The runtime report
+named the cause itself:
+
+```
+egl-procaddress-misses: 8
+egl-procaddress-miss-1: glDrawBuffersEXT
+egl-procaddress-miss-2: glBlitFramebufferNV
+egl-procaddress-miss-3: glMapBufferRangeEXT
+...
+```
+
+Unity 5.5 probes these through `eglGetProcAddress`, gets NULL because our guest stub
+library does not export them, and then **calls them anyway**. `glMapBufferRangeEXT`'s
+signature is `(target, offset, length, access)`, which is exactly the crash's
+`r0 = GL_ARRAY_BUFFER`. A miss is not a missing feature to Unity; it is a jump to zero.
+
+The eight names are the extension spellings of entry points the driver already has, so
+they are now in `gen_stubs.GLES_EXTENSIONS` (append-only) and regenerated. Two
+generator bugs surfaced on the way:
+
+- `mechanical()` looked only at a command's parameters, so `glMapBufferRangeEXT` — which
+  *returns* `void*` — was emitted as a raw passthrough that would hand the guest a host
+  address. A pointer result now forces a handler.
+- `kLowestAllocPage` in `guest_memory.cpp` was a namespace-scope constant whose dynamic
+  initializer divides by `kPageSize`; the order against that constant's own initializer
+  in another translation unit is unspecified, so it can be computed while `kPageSize` is
+  zero. It is a function now. That is what made `find_free` fail and the guest report
+  `no guest address space for .../zbhost`.
+
+With the fix, `egl-procaddress-misses` is 0, all six libraries load, and the client
+renders.
+
 ## Checks
 
 - Sensor regression failed to link against the original guest library, then passed

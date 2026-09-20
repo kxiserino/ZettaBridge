@@ -17,10 +17,10 @@ inline constexpr std::uint32_t kGlHostCall3First = 228u;
 inline constexpr std::uint32_t kGlHostCall3Last = 331u;
 inline constexpr std::size_t kGlHostCall3Count = 104u;
 inline constexpr std::uint32_t kGlHostCallExtFirst = 332u;
-inline constexpr std::uint32_t kGlHostCallExtLast = 353u;
-inline constexpr std::size_t kGlHostCallExtCount = 22u;
-inline constexpr std::size_t kGlHostCallTotalCount = 268u;
-inline constexpr std::size_t kGlPointerlessHostCallCount = 136u;
+inline constexpr std::uint32_t kGlHostCallExtLast = 361u;
+inline constexpr std::size_t kGlHostCallExtCount = 30u;
+inline constexpr std::size_t kGlHostCallTotalCount = 276u;
+inline constexpr std::size_t kGlPointerlessHostCallCount = 141u;
 
 inline constexpr std::uint32_t ZB_GL_HC_glActiveTexture = 0u;
 inline constexpr std::uint32_t ZB_GL_HC_glAttachShader = 1u;
@@ -290,6 +290,14 @@ inline constexpr std::uint32_t ZB_GL_HC_glPushGroupMarkerEXT = 350u;
 inline constexpr std::uint32_t ZB_GL_HC_glPopGroupMarkerEXT = 351u;
 inline constexpr std::uint32_t ZB_GL_HC_glLabelObjectEXT = 352u;
 inline constexpr std::uint32_t ZB_GL_HC_glGetObjectLabelEXT = 353u;
+inline constexpr std::uint32_t ZB_GL_HC_glMapBufferRangeEXT = 354u;
+inline constexpr std::uint32_t ZB_GL_HC_glFlushMappedBufferRangeEXT = 355u;
+inline constexpr std::uint32_t ZB_GL_HC_glDrawBuffersEXT = 356u;
+inline constexpr std::uint32_t ZB_GL_HC_glBlitFramebufferNV = 357u;
+inline constexpr std::uint32_t ZB_GL_HC_glCopyImageSubDataOES = 358u;
+inline constexpr std::uint32_t ZB_GL_HC_glPatchParameteriOES = 359u;
+inline constexpr std::uint32_t ZB_GL_HC_glDrawElementsBaseVertexOES = 360u;
+inline constexpr std::uint32_t ZB_GL_HC_glDrawElementsInstancedBaseVertexOES = 361u;
 
 struct GlHostCallInfo {
     std::uint32_t index;
@@ -568,6 +576,14 @@ inline constexpr std::array<GlHostCallInfo, kGlHostCallTotalCount> kGlHostCalls{
     {351u, "glPopGroupMarkerEXT", false},
     {352u, "glLabelObjectEXT", true},
     {353u, "glGetObjectLabelEXT", true},
+    {354u, "glMapBufferRangeEXT", false},
+    {355u, "glFlushMappedBufferRangeEXT", false},
+    {356u, "glDrawBuffersEXT", true},
+    {357u, "glBlitFramebufferNV", false},
+    {358u, "glCopyImageSubDataOES", false},
+    {359u, "glPatchParameteriOES", false},
+    {360u, "glDrawElementsBaseVertexOES", true},
+    {361u, "glDrawElementsInstancedBaseVertexOES", true},
 }};
 
 inline constexpr const GlHostCallInfo* gl_host_call(std::uint32_t index) {

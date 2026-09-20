@@ -1868,6 +1868,72 @@ bool HostGl::dispatch(Call& call) {
         backend_.glGetObjectLabelEXT(type, object, bufSize, length, label);
         return true;
     }
+    case ZB_GL_HC_glMapBufferRangeEXT: {
+        return zbgl_manual_glMapBufferRangeEXT(*this, call);
+    }
+    case ZB_GL_HC_glFlushMappedBufferRangeEXT: {
+        const GLenum target = call.scalar<GLenum>(0);
+        const GLintptr offset = call.scalar<GLintptr>(1);
+        const GLsizeiptr length = call.scalar<GLsizeiptr>(2);
+        if (!call.valid()) return true;
+        backend_.glFlushMappedBufferRangeEXT(target, offset, length);
+        return true;
+    }
+    case ZB_GL_HC_glDrawBuffersEXT: {
+        const GLsizei n = call.scalar<GLsizei>(0);
+        const GLenum * bufs = call.pointer<const GLenum>(1, call.length(n, 1u), kPageRead);
+        if (!call.valid()) return true;
+        backend_.glDrawBuffersEXT(n, bufs);
+        return true;
+    }
+    case ZB_GL_HC_glBlitFramebufferNV: {
+        const GLint srcX0 = call.scalar<GLint>(0);
+        const GLint srcY0 = call.scalar<GLint>(1);
+        const GLint srcX1 = call.scalar<GLint>(2);
+        const GLint srcY1 = call.scalar<GLint>(3);
+        const GLint dstX0 = call.scalar<GLint>(4);
+        const GLint dstY0 = call.scalar<GLint>(5);
+        const GLint dstX1 = call.scalar<GLint>(6);
+        const GLint dstY1 = call.scalar<GLint>(7);
+        const GLbitfield mask = call.scalar<GLbitfield>(8);
+        const GLenum filter = call.scalar<GLenum>(9);
+        if (!call.valid()) return true;
+        backend_.glBlitFramebufferNV(srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, mask, filter);
+        return true;
+    }
+    case ZB_GL_HC_glCopyImageSubDataOES: {
+        const GLuint srcName = call.scalar<GLuint>(0);
+        const GLenum srcTarget = call.scalar<GLenum>(1);
+        const GLint srcLevel = call.scalar<GLint>(2);
+        const GLint srcX = call.scalar<GLint>(3);
+        const GLint srcY = call.scalar<GLint>(4);
+        const GLint srcZ = call.scalar<GLint>(5);
+        const GLuint dstName = call.scalar<GLuint>(6);
+        const GLenum dstTarget = call.scalar<GLenum>(7);
+        const GLint dstLevel = call.scalar<GLint>(8);
+        const GLint dstX = call.scalar<GLint>(9);
+        const GLint dstY = call.scalar<GLint>(10);
+        const GLint dstZ = call.scalar<GLint>(11);
+        const GLsizei srcWidth = call.scalar<GLsizei>(12);
+        const GLsizei srcHeight = call.scalar<GLsizei>(13);
+        const GLsizei srcDepth = call.scalar<GLsizei>(14);
+        if (!call.valid()) return true;
+        backend_.glCopyImageSubDataOES(srcName, srcTarget, srcLevel, srcX, srcY, srcZ, dstName, dstTarget, dstLevel, dstX, dstY, dstZ, srcWidth, srcHeight, srcDepth);
+        return true;
+    }
+    case ZB_GL_HC_glPatchParameteriOES: {
+        const GLenum pname = call.scalar<GLenum>(0);
+        const GLint value = call.scalar<GLint>(1);
+        if (!call.valid()) return true;
+        backend_.glPatchParameteriOES(pname, value);
+        return true;
+    }
+    case ZB_GL_HC_glDrawElementsBaseVertexOES: {
+        return zbgl_manual_glDrawElementsBaseVertexOES(*this, call);
+    }
+    case ZB_GL_HC_glDrawElementsInstancedBaseVertexOES: {
+        return zbgl_manual_glDrawElementsInstancedBaseVertexOES(*this, call);
+    }
     default:
         return false;
     }

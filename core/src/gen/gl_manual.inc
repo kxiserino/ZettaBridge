@@ -53,3 +53,6 @@ bool zbgl_manual_glPushDebugGroupKHR(HostGl& host, HostGl::Call& call);
 bool zbgl_manual_glObjectLabelKHR(HostGl& host, HostGl::Call& call);
 bool zbgl_manual_glPushGroupMarkerEXT(HostGl& host, HostGl::Call& call);
 bool zbgl_manual_glLabelObjectEXT(HostGl& host, HostGl::Call& call);
+bool zbgl_manual_glMapBufferRangeEXT(HostGl& host, HostGl::Call& call);
+bool zbgl_manual_glDrawElementsBaseVertexOES(HostGl& host, HostGl::Call& call);
+bool zbgl_manual_glDrawElementsInstancedBaseVertexOES(HostGl& host, HostGl::Call& call);

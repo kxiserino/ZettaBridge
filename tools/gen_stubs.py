@@ -75,6 +75,17 @@ GLES_EXTENSIONS = [
     # Adreno's GL_EXT_debug_label is the one Unity actually calls for object labels (it labels
     # textures and buffers through glLabelObjectEXT, not glObjectLabelKHR).
     ("GL_EXT_debug_label", ["glLabelObjectEXT", "glGetObjectLabelEXT"]),
+    # Unity 5.5 probes these through eglGetProcAddress and then calls them without checking for
+    # NULL, so a miss is a jump to 0x00000000 rather than a missing feature: a Pixel 11 dies at
+    # libunity.so+0x52dd1c with r0 = GL_ARRAY_BUFFER, which is glMapBufferRangeEXT's signature.
+    # The names are the extension spellings of core entry points the driver already has.
+    ("GL_EXT_map_buffer_range", ["glMapBufferRangeEXT", "glFlushMappedBufferRangeEXT"]),
+    ("GL_EXT_draw_buffers", ["glDrawBuffersEXT"]),
+    ("GL_NV_framebuffer_blit", ["glBlitFramebufferNV"]),
+    ("GL_OES_copy_image", ["glCopyImageSubDataOES"]),
+    ("GL_OES_tessellation_shader", ["glPatchParameteriOES"]),
+    ("GL_OES_draw_elements_base_vertex",
+     ["glDrawElementsBaseVertexOES", "glDrawElementsInstancedBaseVertexOES"]),
 ]
 
 

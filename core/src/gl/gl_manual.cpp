@@ -1242,6 +1242,43 @@ bool zbgl_manual_glDrawElementsInstanced(HostGl& host, HostGl::Call& call) {
     return true;
 }
 
+// The extension spellings Unity resolves through eglGetProcAddress and then calls. They are the
+// same entry points as the core ones, so they share the same marshaling rather than taking the
+// passthrough path: an index array still needs checking, and a mapped buffer still needs its
+// guest mirror.
+
+bool zbgl_manual_glMapBufferRangeEXT(HostGl& host, HostGl::Call& call) {
+    return zbgl_manual_glMapBufferRange(host, call);
+}
+
+bool zbgl_manual_glDrawElementsBaseVertexOES(HostGl& host, HostGl::Call& call) {
+    const GLenum mode = call.scalar<GLenum>(0);
+    const GLsizei count = call.scalar<GLsizei>(1);
+    const GLenum type = call.scalar<GLenum>(2);
+    const std::uint32_t guest_indices = call.arg(3);
+    const GLint basevertex = call.scalar<GLint>(4);
+    if (!call.valid()) return true;
+    const void* driver_indices = nullptr;
+    if (!prepare_elements(host, call, count, type, guest_indices, driver_indices)) return true;
+    host.backend().glDrawElementsBaseVertexOES(mode, count, type, driver_indices, basevertex);
+    return true;
+}
+
+bool zbgl_manual_glDrawElementsInstancedBaseVertexOES(HostGl& host, HostGl::Call& call) {
+    const GLenum mode = call.scalar<GLenum>(0);
+    const GLsizei count = call.scalar<GLsizei>(1);
+    const GLenum type = call.scalar<GLenum>(2);
+    const std::uint32_t guest_indices = call.arg(3);
+    const GLsizei instancecount = call.scalar<GLsizei>(4);
+    const GLint basevertex = call.scalar<GLint>(5);
+    if (!call.valid()) return true;
+    const void* driver_indices = nullptr;
+    if (!prepare_elements(host, call, count, type, guest_indices, driver_indices)) return true;
+    host.backend().glDrawElementsInstancedBaseVertexOES(mode, count, type, driver_indices,
+                                                        instancecount, basevertex);
+    return true;
+}
+
 bool zbgl_manual_glDrawRangeElements(HostGl& host, HostGl::Call& call) {
     const GLenum mode = call.scalar<GLenum>(0);
     const GLuint start = call.scalar<GLuint>(1);
