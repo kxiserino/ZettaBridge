@@ -566,6 +566,11 @@ std::int32_t sys_nanosleep(Ctx& c) {
     timespec req;
     timespec rem{};
     if (!read_timespec(c.mem, c.a[0], false, req)) return -EFAULT;
+    // A guest that computes an absurd sleep from a bad clock parks forever with no visible cause.
+    // Record anything longer than a second so a freeze dump shows it.
+    if (req.tv_sec >= 1) {
+        runtime_report().note_sleep(std::to_string(c.thread.tid), req.tv_sec, req.tv_nsec);
+    }
     if (::nanosleep(&req, &rem) == 0) return 0;
     const int err = errno;
     if (err == EINTR && c.a[1] != 0) write_timespec(c.mem, c.a[1], false, rem);

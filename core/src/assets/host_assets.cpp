@@ -11,6 +11,7 @@
 #include "zb/guest_memory.h"
 #include "zb/host_jni.h"
 #include "zb/log.h"
+#include "zb/runtime_report.h"
 
 namespace zb {
 
@@ -104,7 +105,12 @@ bool HostAssets::handle_host_call(std::uint32_t index, GuestThread& thread) {
         std::string filename;
         if (manager != 0) filename = read_guest_string(runtime_.memory(), regs[1], ok);
         std::uint64_t asset = 0;
-        if (manager != 0 && ok) asset = backend_.open(manager, filename, static_cast<std::int32_t>(regs[2]));
+        if (manager != 0 && ok) {
+            asset = backend_.open(manager, filename, static_cast<std::int32_t>(regs[2]));
+            // A loader that cannot open an asset can retry forever behind a loading screen. Record
+            // every failure by name: the report is the only place the name survives.
+            if (asset == 0) runtime_report().note_asset_open_failed(filename);
+        }
         regs[0] = asset == 0 ? 0 : assets_.add(asset);
         return true;
     }

@@ -190,6 +190,32 @@ void RuntimeReport::note_guest_open_failed(const std::string& path, int error) {
     if (observer) (*observer)(structural);
 }
 
+void RuntimeReport::note_sleep(const std::string& tid, long long seconds, long long nanoseconds) {
+    // Keyed so the longest sleep survives, and so an identical repeated sleep is recorded once.
+    char text[96];
+    std::snprintf(text, sizeof text, "%010lld.%09lld tid=%s", seconds, nanoseconds, tid.c_str());
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const std::string& existing : long_sleeps_) {
+        if (existing == text) return;
+    }
+    long_sleeps_.push_back(text);
+    std::sort(long_sleeps_.begin(), long_sleeps_.end(),
+              [](const std::string& a, const std::string& b) { return a > b; });
+    if (long_sleeps_.size() > kMaxLongSleeps) long_sleeps_.resize(kMaxLongSleeps);
+}
+
+void RuntimeReport::note_asset_open_failed(const std::string& name) {
+    const std::string key = one_line(name, kMaxDetail);
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto& [existing, count] : failed_assets_) {
+        if (existing == key) {
+            ++count;
+            return;
+        }
+    }
+    if (failed_assets_.size() < kMaxFailedAssets) failed_assets_.emplace_back(key, 1);
+}
+
 void RuntimeReport::note_signal_event(const std::string& event) {
     // A rolling window of the most recent events, not the first ones: the interesting trace is
     // the tail, right before a freeze. Deliberately not marked structural, so a stop-the-world's
@@ -612,6 +638,15 @@ std::string RuntimeReport::text() const {
         }
         if (shown == 0) out += " (none)";
         out += " total=" + std::to_string(total) + '\n';
+    }
+
+    for (std::size_t i = 0; i < failed_assets_.size(); ++i) {
+        out += "asset-open-failed-" + std::to_string(i + 1) + ": " + failed_assets_[i].first +
+               " x" + std::to_string(failed_assets_[i].second) + '\n';
+    }
+
+    for (std::size_t i = 0; i < long_sleeps_.size(); ++i) {
+        out += "long-sleep-" + std::to_string(i + 1) + ": " + long_sleeps_[i] + '\n';
     }
 
     out += "threads-mutex-owner: ";

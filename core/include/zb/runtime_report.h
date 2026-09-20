@@ -67,6 +67,16 @@ public:
     // that burns kernel time. Lock-free relaxed add on the hot path.
     static constexpr std::size_t kMaxSyscallNumbers = 512;
     void note_syscall(std::uint32_t number);
+    // Guest nanosleeps longer than a second, longest first, at most kMaxLongSleeps of them. A
+    // guest that parks forever on an absurd sleep computed from a bad clock shows up here.
+    static constexpr std::size_t kMaxLongSleeps = 8;
+    void note_sleep(const std::string& tid, long long seconds, long long nanoseconds);
+
+    // Assets the guest asked for and could not open, by name, with the number of attempts. At most
+    // kMaxFailedAssets names. A loader retrying a missing asset behind a loading screen shows here.
+    static constexpr std::size_t kMaxFailedAssets = 16;
+    void note_asset_open_failed(const std::string& name);
+
     // The host thread that currently holds the thread-registry mutex, or 0 when it is free. Set by
     // Process on lock and unlock; a freeze dump that shows threads queued on that lock needs the
     // holder's id to tell a slow critical section from a lost unlock.
@@ -211,6 +221,8 @@ private:
     std::string exit_reason_;
     std::array<std::atomic<std::uint64_t>, kMaxSyscallNumbers> syscall_counts_{};
     std::atomic<std::int32_t> threads_mutex_owner_{0};
+    std::vector<std::string> long_sleeps_;
+    std::vector<std::pair<std::string, std::uint64_t>> failed_assets_;
     struct SyscallTraceEntry {
         std::atomic<std::int32_t> tid{0};
         std::atomic<std::uint32_t> number{0};
