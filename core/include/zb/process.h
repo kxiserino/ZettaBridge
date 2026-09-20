@@ -24,6 +24,19 @@ class ExclusiveMonitor;
 namespace zb {
 
 // One guest process: its address space, emulated kernel state and threads.
+// A mutex that records which host thread holds it. The freeze dumps showed dozens of guest threads
+// queued on the thread-registry lock without naming its holder, which is the one fact needed to
+// tell a merely slow critical section from a lock that was never released.
+class TrackedMutex {
+public:
+    void lock();
+    void unlock();
+    bool try_lock();
+
+private:
+    std::mutex mutex_;
+};
+
 class Process {
 public:
     using HostCallHandler = std::function<bool(std::uint32_t index, GuestThread& thread)>;
@@ -33,7 +46,12 @@ public:
     static constexpr std::uint32_t kMmapLimit = 0xFE000000;
     // A PIE main executable is placed below this address.
     static constexpr std::uint32_t kExecutableLimit = 0x40000000;
-    static constexpr std::size_t kMaxThreads = 256;
+    // One processor id per live GuestThread, and a borrower lease costs two (its carrier and the
+    // borrower). The client runs well over a hundred threads and borrows a carrier for every Java
+    // ->native call, so a pool of 256 is close enough to be hit: exhaustion makes clone_thread
+    // return EAGAIN and create_borrower return null, which stalls whatever was creating threads or
+    // calling native. The pool is a bitset plus two small arrays in the exclusive monitor.
+    static constexpr std::size_t kMaxThreads = 1024;
 
     Process();
     ~Process();
@@ -42,6 +60,8 @@ public:
 
     // Host directory holding the arm32 Android system files (system/bin/linker, system/lib/...).
     void set_sysroot(std::string dir) { sysroot_ = std::move(dir); }
+    // Canonical directory, set before run(): guest loaders need ARM32 files, not ART's proxies.
+    void set_plugin_root(std::string dir) { plugin_root_ = std::move(dir); }
     // See GuestThread: precise memory faults at a speed cost. Defaults to $ZB_PRECISE_FAULTS.
     void set_precise_faults(bool enabled) { precise_faults_ = enabled; }
 
@@ -124,7 +144,8 @@ public:
     std::mutex& signal_mutex() { return signal_mutex_; }
 
     // Maps absolute guest paths of the Android system (/system, /apex, /vendor, ...) into the
-    // sysroot, and /proc/self/exe to the guest executable. Other paths are returned unchanged.
+    // sysroot, /proc/self/exe to the guest executable, and this plugin's ART proxies to ARM32
+    // libraries. Other paths are returned unchanged.
     std::string translate_path(const char* guest_path) const;
     // Host path of the guest executable, as reported by /proc/self/exe.
     const std::string& exe_path() const { return exe_path_; }
@@ -148,6 +169,13 @@ public:
     void forget_mappings(std::uint32_t start, std::uint64_t length);
     // "libc.so offset 0x1234" style description, or "?" if the address is not file-backed.
     std::string describe_address(std::uint32_t addr) const;
+    // Distinct paths of the shared libraries currently mapped in the guest, in first-mapped
+    // order. Used by the JNI loader to bind the Java_* exports of libraries a guest dlopen'd
+    // directly (not through System.loadLibrary, which the proxy already routes through the loader).
+    std::vector<std::string> mapped_library_paths() const;
+    // Diagnostics-only guest backtrace for a thread by host tid: its pc/lr plus the stack words
+    // that name a known file mapping. Used by the hang watchdog; never changes guest state.
+    std::string describe_thread_stack(std::int32_t tid) const;
 
     // Executable segments of libraries marked DT_ZB_TEXTREL (see elf_fixups.h). They stay
     // writable inside the emulator so text relocations can be applied. forget_mappings drops them.
@@ -197,11 +225,13 @@ private:
     std::unique_ptr<Dynarmic::ExclusiveMonitor> monitor_;
     std::unique_ptr<GuestThread> main_;
 
-    mutable std::mutex threads_mutex_;
-    std::condition_variable threads_cv_;
+    mutable TrackedMutex threads_mutex_;
+    // _any, not _v: the condition waits on TrackedMutex, which std::condition_variable cannot take.
+    std::condition_variable_any threads_cv_;
     std::vector<GuestThread*> threads_;
     std::vector<GuestThread*> borrowers_;
     std::bitset<kMaxThreads> processor_ids_;
+    std::size_t processor_id_high_water_ = 0;
 
     std::mutex mm_mutex_;
     std::mutex signal_mutex_;
@@ -210,6 +240,7 @@ private:
     std::vector<FileMapping> file_mappings_;
     std::vector<std::pair<std::uint32_t, std::uint32_t>> textrel_ranges_;
     std::string sysroot_;
+    std::string plugin_root_;
     std::string exe_path_;
     bool precise_faults_ = false;
     std::uint32_t initial_sp_ = 0;

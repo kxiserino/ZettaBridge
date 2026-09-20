@@ -69,8 +69,16 @@ done
 
 for asm in "$ROOT"/guest/stubs/gen/*.S; do
     lib=$(basename "$asm" .S)
-    "$CC" -shared -nostdlib -Wl,-soname,"$lib.so" -o "$OUT/lib/$lib.so" "$asm"
+    if [ "$lib" = libandroid ]; then
+        "$CC" -shared -fPIC -O2 -Wall -Wextra -nostdlib -Wl,--no-undefined -Wl,-soname,"$lib.so" \
+            -o "$OUT/lib/$lib.so" "$asm" "$ROOT/guest/compat/sensors_unavailable.c"
+    else
+        "$CC" -shared -nostdlib -Wl,-soname,"$lib.so" -o "$OUT/lib/$lib.so" "$asm"
+    fi
 done
+
+"$CC" -O2 -Wall -Wextra -o "$OUT/sensor_unavailable" \
+    "$ROOT/guest/tests/sensor_unavailable.c" -L"$OUT/lib" -landroid
 
 # End-to-end callback ALooper probe. -L precedes the NDK sysroot so -landroid resolves to the
 # generated arm32 trap stub rather than the platform library.

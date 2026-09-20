@@ -25,10 +25,18 @@ android {
     defaultConfig {
         applicationId = "com.zettabridge.launcher"
         minSdk = 26
-        targetSdk = 35
+        // 30, not 35: the plugin's Java runs under this app's targetSdk, and a targetSdk of R+
+        // makes LocationManager.addGpsStatusListener throw UnsupportedOperationException, which
+        // crashes the old Niantic location provider the moment it starts. The 2016 client targets
+        // 23 and is unaffected; this keeps the guest on the legacy behavior it expects.
+        targetSdk = 30
         versionCode = 1
         versionName = "0.1.0"
         ndk { abiFilters += "arm64-v8a" }
+        // A wrapper build carries one game and is named after it, so nothing the user sees says
+        // ZettaBridge. -PzbAppName=Kanto for such a build; the default is the generic launcher.
+        val appName = (findProperty("zbAppName") as String?)?.takeIf { it.isNotBlank() } ?: "ZettaBridge"
+        resValue("string", "app_name", appName)
     }
 
     signingConfigs {
@@ -47,6 +55,13 @@ android {
             if (hasReleaseKey) signingConfig = signingConfigs.getByName("release")
         }
     }
+    androidResources {
+        // A bundled game is read out of assets on first run. Compressed, the AssetManager
+        // decompresses the whole entry, which is hundreds of megabytes of heap for a game and is
+        // enough to abort the app on a fresh install. Stored, it streams straight off the APK.
+        noCompress += "apk"
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17

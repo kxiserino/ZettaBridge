@@ -134,6 +134,7 @@ LibraryRuntimeOptions guest_runtime_options(const GuestRuntimeLayout& layout, co
     LibraryRuntimeOptions options;
     options.zbhost = layout.zbhost;
     options.sysroot = layout.sysroot;
+    options.plugin_root = plugin_root;
     options.target_sdk = target_sdk;
     options.preload = "libzbjni.so";
     options.guest_environment = {"LD_LIBRARY_PATH=" + layout.guest_lib_dir + ":" + plugin_root + "/lib"};

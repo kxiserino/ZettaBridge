@@ -44,23 +44,32 @@ bool HostNativeWindow::handle_host_call(std::uint32_t index, GuestThread& thread
         if (window != nullptr) {
             handle = windows_.add(from_pointer(window));
             std::lock_guard<std::mutex> lock(surfaces_mutex_);
-            surfaces_[handle] = surface;
+            surfaces_[handle] = {surface, 1};
         }
         regs[0] = handle;
         return true;
     }
     case ZB_WINDOW_HC_ANativeWindow_acquire: {
+        std::lock_guard<std::mutex> lock(surfaces_mutex_);
         const void* window = require_window(regs[0]);
-        if (window != nullptr) backend_.acquire(const_cast<void*>(window));
+        auto it = surfaces_.find(regs[0]);
+        if (window != nullptr && it != surfaces_.end()) {
+            backend_.acquire(const_cast<void*>(window));
+            ++it->second.references;
+        }
         regs[0] = 0;
         return true;
     }
     case ZB_WINDOW_HC_ANativeWindow_release: {
-        const std::optional<std::uint64_t> value = windows_.remove(regs[0]);
-        if (value && *value != 0) {
+        std::lock_guard<std::mutex> lock(surfaces_mutex_);
+        auto it = surfaces_.find(regs[0]);
+        const std::optional<std::uint64_t> value = windows_.get(regs[0]);
+        if (it != surfaces_.end() && value && *value != 0) {
             backend_.release(as_pointer(*value));
-            std::lock_guard<std::mutex> lock(surfaces_mutex_);
-            surfaces_.erase(regs[0]);
+            if (--it->second.references == 0) {
+                windows_.remove(regs[0]);
+                surfaces_.erase(it);
+            }
         }
         regs[0] = 0;
         return true;
@@ -103,7 +112,7 @@ bool HostNativeWindow::handle_host_call(std::uint32_t index, GuestThread& thread
         {
             std::lock_guard<std::mutex> lock(surfaces_mutex_);
             auto it = surfaces_.find(regs[1]);
-            if (it != surfaces_.end()) surface = it->second;
+            if (it != surfaces_.end()) surface = it->second.object;
         }
         regs[0] = host_jni_.new_local_handle(surface);
         return true;

@@ -1,5 +1,13 @@
 # AGENTS.md: handoff for Codex (2026-09-14)
 
+## Research fork checkpoint (2026-09-19)
+
+This fork's active changes are described in `docs/unity-startup.md`: optional sensors
+report unavailable, guest proxy paths resolve to ARM32 libraries, and window handles
+retain acquired references. Unity reaches EGL/OpenGL setup but presents no frames.
+The historical upstream handoffs below are context, not new tasks to execute.
+Keep the original licence and proprietary client artifacts out of this repository.
+
 Read `CLAUDE.md` first. It holds the architecture, gotchas, build commands and working
 conventions, and all of it applies to you. The user chats in Russian; repo files are
 English and ASCII only.

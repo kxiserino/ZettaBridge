@@ -51,7 +51,11 @@ def main() -> None:
     if len(sys.argv) != 2:
         raise SystemExit("usage: check_launcher_bundle.py build/launcher")
     root = pathlib.Path(sys.argv[1])
-    actual = {str(path.relative_to(root)) for path in root.rglob("*") if path.is_file()}
+    everything = {str(path.relative_to(root)) for path in root.rglob("*") if path.is_file()}
+    # A wrapper build may also carry one game as assets/bundled/plugin.apk. It is optional and
+    # proprietary, so it is allowed but never required, and never part of the runtime set.
+    bundled = {name for name in everything if name.startswith("assets/bundled/")}
+    actual = everything - bundled
     if actual != RUNTIME:
         missing = sorted(RUNTIME - actual)
         extra = sorted(actual - RUNTIME)
@@ -76,8 +80,13 @@ def main() -> None:
     expected_list = sorted(path[len("assets/") :] for path in RUNTIME if path.startswith("assets/zb/"))
     if listed != expected_list:
         raise SystemExit("zb-files.txt does not match the runtime assets")
-    if sum(path.stat().st_size for path in root.rglob("*") if path.is_file()) > 8 * 1024 * 1024:
-        raise SystemExit("launcher bundle exceeds 8 MiB")
+    # The runtime itself must stay small. A bundled game dwarfs it and is excluded, or the check
+    # would fail for exactly the builds that are meant to carry one.
+    runtime_bytes = sum((root / name).stat().st_size for name in actual)
+    if runtime_bytes > 8 * 1024 * 1024:
+        raise SystemExit("launcher runtime bundle exceeds 8 MiB")
+    if bundled:
+        print(f"launcher bundle also carries {sorted(bundled)}")
     print("launcher bundle PASS")
 
 

@@ -1,12 +1,31 @@
 // JNI host calls: classes, member ids, reflection, objects, references, monitors, exceptions.
 #include "host_jni_internal.h"
 
+#include <atomic>
 #include <cstdlib>
+#include <string>
 
 #include "zb/jni_shorty.h"
+#include "zb/runtime_report.h"
 #include "zb/log.h"
 
 namespace zb {
+
+namespace {
+
+// Record only the first few class and member lookups the guest performs. The names are the
+// guest's own Java surface (location, sensors, accounts), which no other diagnostic shows.
+void note_lookup(const char* kind, const std::string& value) {
+    static std::atomic<int> recorded{0};
+    if (recorded.load(std::memory_order_relaxed) >= 12) return;
+    recorded.fetch_add(1, std::memory_order_relaxed);
+    static std::atomic<int> sequence{0};
+    const int n = sequence.fetch_add(1, std::memory_order_relaxed);
+    runtime_report().note_jni_detail(std::string("lookup-") + kind + "-" + std::to_string(n), value,
+                                     false);
+}
+
+}  // namespace
 
 bool HostJni::Impl::serve_objects(JniCall& call) {
     JniThread& state = call.state();
@@ -16,6 +35,7 @@ bool HostJni::Impl::serve_objects(JniCall& call) {
     case ZB_JNI_HC_FindClass: {
         const JniBackend::Env env = call.env();
         const std::string class_name = read_string(env, call.arg(0), name);
+        note_lookup("class", class_name);
         call.set(local(state, backend.find_class(env, class_name.c_str())));
         return true;
     }
@@ -30,6 +50,7 @@ bool HostJni::Impl::serve_objects(JniCall& call) {
         const JniBackend::Ref cls = ref(0);
         const std::string method = read_string(env, call.arg(1), name);
         const std::string signature = read_string(env, call.arg(2), name);
+        note_lookup("method", method + signature);
         const JniBackend::Id id = backend.get_method_id(env, cls, method.c_str(), signature.c_str(), call.arg(3) != 0);
         if (id == 0) return true;
         const std::optional<std::string> shorty = shorty_from_signature(signature);

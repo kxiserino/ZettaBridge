@@ -822,6 +822,60 @@ public:
     virtual void glTexStorage3DEXT(GLenum target, GLsizei levels, GLenum internalformat, GLsizei width, GLsizei height, GLsizei depth) {
         (void)invoke("glTexStorage3DEXT", {gl_backend_word(target), gl_backend_word(levels), gl_backend_word(internalformat), gl_backend_word(width), gl_backend_word(height), gl_backend_word(depth)});
     }
+    virtual void glDebugMessageControlKHR(GLenum source, GLenum type, GLenum severity, GLsizei count, const GLuint *ids, GLboolean enabled) {
+        (void)invoke("glDebugMessageControlKHR", {gl_backend_word(source), gl_backend_word(type), gl_backend_word(severity), gl_backend_word(count), gl_backend_word(ids), gl_backend_word(enabled)});
+    }
+    virtual void glDebugMessageInsertKHR(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar *buf) {
+        (void)invoke("glDebugMessageInsertKHR", {gl_backend_word(source), gl_backend_word(type), gl_backend_word(id), gl_backend_word(severity), gl_backend_word(length), gl_backend_word(buf)});
+    }
+    virtual void glPushDebugGroupKHR(GLenum source, GLuint id, GLsizei length, const GLchar *message) {
+        (void)invoke("glPushDebugGroupKHR", {gl_backend_word(source), gl_backend_word(id), gl_backend_word(length), gl_backend_word(message)});
+    }
+    virtual void glPopDebugGroupKHR(void) {
+        (void)invoke("glPopDebugGroupKHR", {});
+    }
+    virtual void glObjectLabelKHR(GLenum identifier, GLuint name, GLsizei length, const GLchar *label) {
+        (void)invoke("glObjectLabelKHR", {gl_backend_word(identifier), gl_backend_word(name), gl_backend_word(length), gl_backend_word(label)});
+    }
+    virtual void glGetObjectLabelKHR(GLenum identifier, GLuint name, GLsizei bufSize, GLsizei *length, GLchar *label) {
+        (void)invoke("glGetObjectLabelKHR", {gl_backend_word(identifier), gl_backend_word(name), gl_backend_word(bufSize), gl_backend_word(length), gl_backend_word(label)});
+    }
+    virtual void glPushGroupMarkerEXT(GLsizei length, const GLchar *marker) {
+        (void)invoke("glPushGroupMarkerEXT", {gl_backend_word(length), gl_backend_word(marker)});
+    }
+    virtual void glPopGroupMarkerEXT(void) {
+        (void)invoke("glPopGroupMarkerEXT", {});
+    }
+    virtual void glLabelObjectEXT(GLenum type, GLuint object, GLsizei length, const GLchar *label) {
+        (void)invoke("glLabelObjectEXT", {gl_backend_word(type), gl_backend_word(object), gl_backend_word(length), gl_backend_word(label)});
+    }
+    virtual void glGetObjectLabelEXT(GLenum type, GLuint object, GLsizei bufSize, GLsizei *length, GLchar *label) {
+        (void)invoke("glGetObjectLabelEXT", {gl_backend_word(type), gl_backend_word(object), gl_backend_word(bufSize), gl_backend_word(length), gl_backend_word(label)});
+    }
+    virtual void * glMapBufferRangeEXT(GLenum target, GLintptr offset, GLsizeiptr length, GLbitfield access) {
+        return reinterpret_cast<void *>(static_cast<std::uintptr_t>(invoke("glMapBufferRangeEXT", {gl_backend_word(target), gl_backend_word(offset), gl_backend_word(length), gl_backend_word(access)})));
+    }
+    virtual void glFlushMappedBufferRangeEXT(GLenum target, GLintptr offset, GLsizeiptr length) {
+        (void)invoke("glFlushMappedBufferRangeEXT", {gl_backend_word(target), gl_backend_word(offset), gl_backend_word(length)});
+    }
+    virtual void glDrawBuffersEXT(GLsizei n, const GLenum *bufs) {
+        (void)invoke("glDrawBuffersEXT", {gl_backend_word(n), gl_backend_word(bufs)});
+    }
+    virtual void glBlitFramebufferNV(GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1, GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1, GLbitfield mask, GLenum filter) {
+        (void)invoke("glBlitFramebufferNV", {gl_backend_word(srcX0), gl_backend_word(srcY0), gl_backend_word(srcX1), gl_backend_word(srcY1), gl_backend_word(dstX0), gl_backend_word(dstY0), gl_backend_word(dstX1), gl_backend_word(dstY1), gl_backend_word(mask), gl_backend_word(filter)});
+    }
+    virtual void glCopyImageSubDataOES(GLuint srcName, GLenum srcTarget, GLint srcLevel, GLint srcX, GLint srcY, GLint srcZ, GLuint dstName, GLenum dstTarget, GLint dstLevel, GLint dstX, GLint dstY, GLint dstZ, GLsizei srcWidth, GLsizei srcHeight, GLsizei srcDepth) {
+        (void)invoke("glCopyImageSubDataOES", {gl_backend_word(srcName), gl_backend_word(srcTarget), gl_backend_word(srcLevel), gl_backend_word(srcX), gl_backend_word(srcY), gl_backend_word(srcZ), gl_backend_word(dstName), gl_backend_word(dstTarget), gl_backend_word(dstLevel), gl_backend_word(dstX), gl_backend_word(dstY), gl_backend_word(dstZ), gl_backend_word(srcWidth), gl_backend_word(srcHeight), gl_backend_word(srcDepth)});
+    }
+    virtual void glPatchParameteriOES(GLenum pname, GLint value) {
+        (void)invoke("glPatchParameteriOES", {gl_backend_word(pname), gl_backend_word(value)});
+    }
+    virtual void glDrawElementsBaseVertexOES(GLenum mode, GLsizei count, GLenum type, const void *indices, GLint basevertex) {
+        (void)invoke("glDrawElementsBaseVertexOES", {gl_backend_word(mode), gl_backend_word(count), gl_backend_word(type), gl_backend_word(indices), gl_backend_word(basevertex)});
+    }
+    virtual void glDrawElementsInstancedBaseVertexOES(GLenum mode, GLsizei count, GLenum type, const void *indices, GLsizei instancecount, GLint basevertex) {
+        (void)invoke("glDrawElementsInstancedBaseVertexOES", {gl_backend_word(mode), gl_backend_word(count), gl_backend_word(type), gl_backend_word(indices), gl_backend_word(instancecount), gl_backend_word(basevertex)});
+    }
 
 protected:
     virtual std::uint64_t invoke(const char* name,

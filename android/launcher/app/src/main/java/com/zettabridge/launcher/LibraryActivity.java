@@ -1,10 +1,12 @@
 package com.zettabridge.launcher;
 
+import android.Manifest;
 import android.app.Activity;
 import android.app.ActivityManager;
 import android.app.AlertDialog;
 import android.content.ComponentName;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.content.pm.ShortcutInfo;
 import android.content.pm.ShortcutManager;
 import android.graphics.Bitmap;
@@ -44,6 +46,9 @@ public class LibraryActivity extends Activity {
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
+        Permissions.ensureLocation(this, () -> {});
+        // An app the OS is free to freeze looks crashed to the user, so ask before anything runs.
+        BatteryOptimization.ensureExempt(this, () -> {});
         int pad = dp(16);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -356,6 +361,13 @@ public class LibraryActivity extends Activity {
         for (ActivityManager.RunningAppProcessInfo proc : am.getRunningAppProcesses()) {
             if (proc.processName.endsWith(ZbApplication.GUEST_SUFFIX)) android.os.Process.killProcess(proc.pid);
         }
+    }
+
+    /** Location-based plugins read the host LocationManager; ask once on the library screen. */
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
+        super.onRequestPermissionsResult(requestCode, permissions, results);
+        Permissions.onRequestResult(requestCode);
     }
 
     private int dp(int value) {

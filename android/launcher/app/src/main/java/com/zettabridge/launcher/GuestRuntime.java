@@ -7,6 +7,7 @@ import android.app.Instrumentation;
 import android.content.ContextWrapper;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
+import android.net.Uri;
 import android.os.Bundle;
 import android.util.Log;
 import android.view.ContextThemeWrapper;
@@ -140,14 +141,43 @@ final class GuestRuntime {
         synchronized (this) {
             for (LoadedPlugin p : plugins.values()) {
                 ActivityInfo ai = p.activities.get(className);
-                if (ai != null) return stubIntent(p, ai, intent);
+                if (ai != null) {
+                    Log.i(TAG, "route: " + className + " -> " + ai.name);
+                    return stubIntent(p, ai, intent);
+                }
             }
         }
+        Log.i(TAG, "route: no plugin activity for " + intent.getComponent().flattenToShortString());
         return intent;
     }
 
+    /**
+     * Delivers a browser/OAuth deep link (ACTION_VIEW naming a plugin scheme) to the plugin
+     * activity that declares that scheme, by starting it explicitly so the normal stub routing
+     * applies. The browser callback for "sign in with Discord" lands here instead of the
+     * separately installed Kanto app. False when no active plugin handles the URI.
+     */
+    boolean handleDeepLink(Activity activity) {
+        LoadedPlugin p = current();
+        Intent intent = activity.getIntent();
+        if (p == null || intent == null || intent.getData() == null) return false;
+        Uri data = intent.getData();
+        String target = ManifestReader.findDeepLinkActivity(p.resources, p.packageName, data.getScheme(),
+                data.getHost());
+        if (target == null) {
+            Log.i(TAG, "deep link: no plugin activity for " + data);
+            return false;
+        }
+        Intent forwarded = new Intent(intent);
+        forwarded.setClassName(p.packageName, target);
+        forwarded.setFlags(forwarded.getFlags() & ~Intent.FLAG_ACTIVITY_NEW_TASK);
+        Log.i(TAG, "deep link: " + data + " -> " + target);
+        activity.startActivity(forwarded);
+        return true;
+    }
+
     private Intent stubIntent(LoadedPlugin p, ActivityInfo ai, Intent original) {
-        Intent stub = new Intent(host, stubFor(ai));
+        Intent stub = new Intent(host, stubFor(p, ai));
         stub.setFlags(original.getFlags());
         stub.putExtra(EXTRA_PLUGIN, p.packageName);
         stub.putExtra(EXTRA_ACTIVITY, ai.name);
@@ -155,16 +185,25 @@ final class GuestRuntime {
         return stub;
     }
 
-    private static Class<? extends Activity> stubFor(ActivityInfo ai) {
-        switch (ai.launchMode) {
-            case ActivityInfo.LAUNCH_SINGLE_TOP:
-                return Stubs.SingleTop.class;
-            case ActivityInfo.LAUNCH_SINGLE_TASK:
-                return Stubs.SingleTask.class;
-            case ActivityInfo.LAUNCH_SINGLE_INSTANCE:
-                return Stubs.SingleInstance.class;
-            default:
-                break;
+    private static Class<? extends Activity> stubFor(LoadedPlugin p, ActivityInfo ai) {
+        // Each stub class is one manifest component, so two plugin activities that share a stub
+        // class share an instance. A singleTask/singleTop/singleInstance stub would then deliver a
+        // secondary activity's intent to the running task root (the plugin's launcher activity) as
+        // onNewIntent instead of opening it, which is dead silence to the plugin: Kanto's sign-in
+        // activity never appeared because it is singleTask like the Unity activity. Only the
+        // launcher keeps its launch mode; secondary activities always take a standard stub (the
+        // orientation stubs are standard too), so each start is a fresh instance.
+        if (ai.name != null && ai.name.equals(p.record.launcherActivity)) {
+            switch (ai.launchMode) {
+                case ActivityInfo.LAUNCH_SINGLE_TOP:
+                    return Stubs.SingleTop.class;
+                case ActivityInfo.LAUNCH_SINGLE_TASK:
+                    return Stubs.SingleTask.class;
+                case ActivityInfo.LAUNCH_SINGLE_INSTANCE:
+                    return Stubs.SingleInstance.class;
+                default:
+                    break;
+            }
         }
         switch (ai.screenOrientation) {
             case ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE:

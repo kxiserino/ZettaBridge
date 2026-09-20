@@ -196,6 +196,7 @@ void test_paths(const Tree& tree) {
     const zb::LibraryRuntimeOptions options = zb::guest_runtime_options(layout, root, 16);
     CHECK(options.zbhost == layout.zbhost);
     CHECK(options.sysroot == layout.sysroot);
+    CHECK(options.plugin_root == root);
     CHECK(options.target_sdk == 16);
     CHECK(options.preload == "libzbjni.so");
     CHECK(options.guest_environment.size() == 1);

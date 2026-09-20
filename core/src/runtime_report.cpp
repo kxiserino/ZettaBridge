@@ -1,6 +1,7 @@
 #include "zb/runtime_report.h"
 
 #include <algorithm>
+#include <chrono>
 
 #include <fcntl.h>
 #include <unistd.h>
@@ -10,7 +11,11 @@
 #include <cstring>
 #include <utility>
 
+#include <vector>
+
+#include "zb/gl_hostcalls.h"
 #include "zb/log.h"
+#include "zb/syscalls.h"
 
 namespace zb {
 
@@ -185,6 +190,84 @@ void RuntimeReport::note_guest_open_failed(const std::string& path, int error) {
     if (observer) (*observer)(structural);
 }
 
+void RuntimeReport::note_sleep(const std::string& tid, long long seconds, long long nanoseconds) {
+    // Keyed so the longest sleep survives, and so an identical repeated sleep is recorded once.
+    char text[96];
+    std::snprintf(text, sizeof text, "%010lld.%09lld tid=%s", seconds, nanoseconds, tid.c_str());
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const std::string& existing : long_sleeps_) {
+        if (existing == text) return;
+    }
+    long_sleeps_.push_back(text);
+    std::sort(long_sleeps_.begin(), long_sleeps_.end(),
+              [](const std::string& a, const std::string& b) { return a > b; });
+    if (long_sleeps_.size() > kMaxLongSleeps) long_sleeps_.resize(kMaxLongSleeps);
+}
+
+void RuntimeReport::note_counter(const std::string& key, std::uint64_t value) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto& [existing, stored] : counters_) {
+        if (existing == key) {
+            stored = value;
+            return;
+        }
+    }
+    counters_.emplace_back(key, value);
+}
+
+void RuntimeReport::note_guest_path_open(const std::string& path, bool succeeded) {
+    const std::string key = one_line(path, kMaxDetail);
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (PathOpenCounts& entry : path_opens_) {
+        if (entry.path == key) {
+            ++entry.opens;
+            if (!succeeded) ++entry.failures;
+            return;
+        }
+    }
+    if (path_opens_.size() < kMaxPathOpens) {
+        path_opens_.push_back(PathOpenCounts{key, 1, succeeded ? 0u : 1u});
+    }
+}
+
+void RuntimeReport::note_library_region(std::uint32_t base, std::uint32_t length,
+                                        const std::string& path) {
+    const std::string key = one_line(path, kMaxDetail);
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (LibraryRegion& region : library_regions_) {
+        if (region.path == key) {
+            // Keep the lowest base: a library mapped in several segments reports each one.
+            if (base < region.base) region.base = base;
+            if (base + length > region.base + region.length) region.length = base + length - region.base;
+            return;
+        }
+    }
+    if (library_regions_.size() < kMaxLibraryRegions) {
+        library_regions_.push_back(LibraryRegion{base, length, key});
+    }
+}
+
+void RuntimeReport::note_asset_open_failed(const std::string& name) {
+    const std::string key = one_line(name, kMaxDetail);
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto& [existing, count] : failed_assets_) {
+        if (existing == key) {
+            ++count;
+            return;
+        }
+    }
+    if (failed_assets_.size() < kMaxFailedAssets) failed_assets_.emplace_back(key, 1);
+}
+
+void RuntimeReport::note_signal_event(const std::string& event) {
+    // A rolling window of the most recent events, not the first ones: the interesting trace is
+    // the tail, right before a freeze. Deliberately not marked structural, so a stop-the-world's
+    // frequent signals do not each force a file rewrite; the freeze note flushes the whole report.
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (signal_events_.size() >= kMaxSignalEvents) signal_events_.erase(signal_events_.begin());
+    signal_events_.push_back(one_line(event, kMaxDetail));
+}
+
 void RuntimeReport::note_guest_exit(const std::string& reason) {
     std::shared_ptr<Observer> observer;
     {
@@ -197,7 +280,34 @@ void RuntimeReport::note_guest_exit(const std::string& reason) {
     if (observer) (*observer)(true);
 }
 
+void RuntimeReport::note_syscall(std::uint32_t number) {
+    if (number < kMaxSyscallNumbers) syscall_counts_[number].fetch_add(1, std::memory_order_relaxed);
+}
+
+void RuntimeReport::note_syscall_args(std::int32_t tid, std::uint32_t number, std::uint32_t a0,
+                                      std::uint32_t a1, std::uint32_t a2) {
+    const std::uint64_t slot = syscall_trace_next_.fetch_add(1, std::memory_order_relaxed);
+    SyscallTraceEntry& entry = syscall_trace_[slot % kMaxSyscallTrace];
+    entry.number.store(number, std::memory_order_relaxed);
+    entry.a0.store(a0, std::memory_order_relaxed);
+    entry.a1.store(a1, std::memory_order_relaxed);
+    entry.a2.store(a2, std::memory_order_relaxed);
+    entry.tid.store(tid, std::memory_order_relaxed);
+}
+
+void RuntimeReport::note_gl_call_index(std::uint32_t index, const char* function,
+                                       std::uint64_t host_tid) {
+    if (index < kMaxGlCallIndices) gl_call_counts_[index].fetch_add(1, std::memory_order_relaxed);
+    note_gl_call(function, host_tid);
+}
+
 void RuntimeReport::note_gl_call(const char* function, std::uint64_t host_tid) {
+    gl_last_call_millis_.store(
+        static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                       std::chrono::steady_clock::now().time_since_epoch())
+                                       .count()),
+        std::memory_order_relaxed);
+    gl_last_call_tid_.store(host_tid, std::memory_order_relaxed);
     bool structural = false;
     std::shared_ptr<Observer> observer;
     {
@@ -243,7 +353,7 @@ void RuntimeReport::note_gl_detail(const std::string& key, const std::string& va
     std::shared_ptr<Observer> observer;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        const std::string line = one_line(value, 600);
+        const std::string line = one_line(value, kMaxDetail);
         auto found = std::find_if(gl_details_.begin(), gl_details_.end(),
                                   [&](const auto& entry) { return entry.first == key; });
         if (found != gl_details_.end()) {
@@ -264,7 +374,7 @@ void RuntimeReport::note_crash_detail(const std::string& key, const std::string&
     std::shared_ptr<Observer> observer;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        const std::string line = one_line(value, 600);
+        const std::string line = one_line(value, kMaxDetail);
         auto found = std::find_if(crash_details_.begin(), crash_details_.end(),
                                   [&](const auto& entry) { return entry.first == key; });
         if (found != crash_details_.end()) {
@@ -285,7 +395,7 @@ void RuntimeReport::note_jni_detail(const std::string& key, const std::string& v
     std::shared_ptr<Observer> observer;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        const std::string line = one_line(value, 600);
+        const std::string line = one_line(value, kMaxDetail);
         auto found = std::find_if(jni_details_.begin(), jni_details_.end(),
                                   [&](const auto& entry) { return entry.first == key; });
         if (found != jni_details_.end()) {
@@ -306,7 +416,7 @@ void RuntimeReport::note_looper_detail(const std::string& key, const std::string
     std::shared_ptr<Observer> observer;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        const std::string line = one_line(value, 600);
+        const std::string line = one_line(value, kMaxDetail);
         auto found = std::find_if(looper_details_.begin(), looper_details_.end(),
                                   [&](const auto& entry) { return entry.first == key; });
         if (found != looper_details_.end()) {
@@ -327,7 +437,7 @@ void RuntimeReport::note_watch_detail(const std::string& key, const std::string&
     std::shared_ptr<Observer> observer;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        const std::string line = one_line(value, 600);
+        const std::string line = one_line(value, kMaxDetail);
         auto found = std::find_if(watch_details_.begin(), watch_details_.end(),
                                   [&](const auto& entry) { return entry.first == key; });
         if (found != watch_details_.end()) {
@@ -348,7 +458,7 @@ void RuntimeReport::note_egl_object(const std::string& key, const std::string& v
     std::shared_ptr<Observer> observer;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        const std::string line = one_line(value, 600);
+        const std::string line = one_line(value, kMaxDetail);
         auto found = std::find_if(egl_objects_.begin(), egl_objects_.end(),
                                   [&](const auto& entry) { return entry.first == key; });
         if (found != egl_objects_.end()) {
@@ -508,6 +618,46 @@ std::string RuntimeReport::text() const {
         append_count(out, "unimplemented-more", distinct_host_calls_ - host_calls_.size());
     }
 
+    {
+        std::vector<std::pair<std::uint32_t, std::uint64_t>> counts;
+        std::uint64_t total = 0;
+        for (std::uint32_t nr = 0; nr < kMaxSyscallNumbers; ++nr) {
+            const std::uint64_t n = syscall_counts_[nr].load(std::memory_order_relaxed);
+            if (n == 0) continue;
+            total += n;
+            counts.emplace_back(nr, n);
+        }
+        std::sort(counts.begin(), counts.end(),
+                  [](const auto& a, const auto& b) { return a.second > b.second; });
+        out += "syscalls:";
+        std::size_t shown = 0;
+        for (const auto& [nr, count] : counts) {
+            if (shown >= 8) break;
+            out += " " + std::string(syscall_name(nr)) + "=" + std::to_string(count);
+            ++shown;
+        }
+        if (shown == 0) out += " (none)";
+        out += " total=" + std::to_string(total) + '\n';
+    }
+
+    // The last handful of syscalls in order (most recent last), with arguments: a freeze dump
+    // that names the fd, futex address or sleep length the process stopped on.
+    {
+        const std::uint64_t next = syscall_trace_next_.load(std::memory_order_relaxed);
+        const std::uint64_t available = std::min<std::uint64_t>(next, kMaxSyscallTrace);
+        const std::uint64_t show = std::min<std::uint64_t>(available, 40);
+        for (std::uint64_t i = 0; i < show; ++i) {
+            const SyscallTraceEntry& entry = syscall_trace_[(next - show + i) % kMaxSyscallTrace];
+            char line[160];
+            std::snprintf(line, sizeof line, "syscall-trace-%llu: tid=%d %s(0x%x, 0x%x, 0x%x)",
+                          static_cast<unsigned long long>(i + 1), entry.tid.load(),
+                          syscall_name(entry.number.load()), entry.a0.load(), entry.a1.load(),
+                          entry.a2.load());
+            out += line;
+            out += '\n';
+        }
+    }
+
     out += "guest-exit: ";
     out += exit_reason_.empty() ? "(none)" : exit_reason_;
     out += '\n';
@@ -531,6 +681,67 @@ std::string RuntimeReport::text() const {
         }
         if (shown == 0) out += " (none)";
         out += " total=" + std::to_string(total) + '\n';
+    }
+
+    for (std::size_t i = 0; i < library_regions_.size(); ++i) {
+        char line[320];
+        std::snprintf(line, sizeof line, "lib-base-%zu: 0x%08x 0x%x %s", i + 1,
+                      library_regions_[i].base, library_regions_[i].length,
+                      library_regions_[i].path.c_str());
+        out += line;
+        out += '\n';
+    }
+
+    for (const auto& [key, value] : counters_) {
+        out += "count-" + key + ": " + std::to_string(value) + '\n';
+    }
+
+    // The most repeated opens. A single open of each path is normal startup noise, but the same
+    // path opened over and over is a retry or search loop, and its name says which one.
+    {
+        std::vector<const PathOpenCounts*> repeated;
+        for (const PathOpenCounts& entry : path_opens_) {
+            if (entry.opens >= 2) repeated.push_back(&entry);
+        }
+        std::sort(repeated.begin(), repeated.end(),
+                  [](const PathOpenCounts* a, const PathOpenCounts* b) { return a->opens > b->opens; });
+        if (repeated.size() > 16) repeated.resize(16);
+        for (std::size_t i = 0; i < repeated.size(); ++i) {
+            out += "path-repeat-" + std::to_string(i + 1) + ": " + repeated[i]->path + " x" +
+                   std::to_string(repeated[i]->opens) + " failed=" +
+                   std::to_string(repeated[i]->failures) + '\n';
+        }
+    }
+
+    for (std::size_t i = 0; i < failed_assets_.size(); ++i) {
+        out += "asset-open-failed-" + std::to_string(i + 1) + ": " + failed_assets_[i].first +
+               " x" + std::to_string(failed_assets_[i].second) + '\n';
+    }
+
+    for (std::size_t i = 0; i < long_sleeps_.size(); ++i) {
+        out += "long-sleep-" + std::to_string(i + 1) + ": " + long_sleeps_[i] + '\n';
+    }
+
+    out += "processor-ids: ";
+    out += std::to_string(processor_ids_used_.load(std::memory_order_relaxed)) + "/" +
+           std::to_string(processor_ids_limit_.load(std::memory_order_relaxed));
+    out += '\n';
+    {
+        const std::uint64_t exhausted = processor_ids_exhausted_.load(std::memory_order_relaxed);
+        if (exhausted != 0) {
+            out += "processor-ids-exhausted: " + std::to_string(exhausted) + '\n';
+        }
+    }
+
+    out += "threads-mutex-owner: ";
+    {
+        const std::int32_t owner = threads_mutex_owner_.load(std::memory_order_relaxed);
+        out += owner == 0 ? std::string("(free)") : std::to_string(owner);
+    }
+    out += '\n';
+
+    for (std::size_t i = 0; i < signal_events_.size(); ++i) {
+        out += "signal-" + std::to_string(i + 1) + ": " + signal_events_[i] + '\n';
     }
 
     if (opened_paths_.empty()) {
@@ -567,6 +778,30 @@ std::string RuntimeReport::text() const {
         out += gl_error_function_ + " " + hex;
     }
     out += '\n';
+    // The bridge-traffic breakdown: the busiest GL functions, so the per-call overhead can be
+    // aimed at the calls the guest actually makes most.
+    {
+        struct Entry {
+            std::uint32_t index;
+            std::uint64_t count;
+        };
+        std::vector<Entry> entries;
+        for (std::uint32_t index = 0; index < kMaxGlCallIndices; ++index) {
+            const std::uint64_t count = gl_call_counts_[index].load(std::memory_order_relaxed);
+            if (count != 0) entries.push_back({index, count});
+        }
+        std::sort(entries.begin(), entries.end(), [](const Entry& a, const Entry& b) {
+            return a.count != b.count ? a.count > b.count : a.index < b.index;
+        });
+        if (entries.size() > 12) entries.resize(12);
+        for (const Entry& entry : entries) {
+            out += "gl-count-";
+            out += std::to_string(entry.index);
+            out += ": ";
+            out += zb::gl_host_call_name(entry.index);
+            out += " x" + std::to_string(entry.count) + '\n';
+        }
+    }
     for (const auto& [key, value] : gl_details_) out += "gl-" + key + ": " + value + '\n';
 
     for (const auto& [key, value] : egl_objects_) out += "egl-" + key + ": " + value + '\n';

@@ -12,7 +12,12 @@ namespace zb {
 namespace {
 
 constexpr std::uint64_t kGuardSize = 64 * 1024;
-constexpr std::uint32_t kLowestAllocPage = 0x10000 >> 12;
+// A function, not a namespace-scope constant: kPageSize comes from sysconf, and the order in
+// which two translation units run their dynamic initializers is unspecified, so a constant here
+// can be computed while kPageSize is still zero.
+std::uint32_t lowest_alloc_page() {
+    return 0x10000 / kPageSize;
+}
 
 bool range_valid(std::uint32_t addr, std::uint64_t len) {
     return len != 0 && (addr & kPageMask) == 0 && static_cast<std::uint64_t>(addr) + len <= kGuestSpaceSize;
@@ -35,7 +40,7 @@ int host_prot(int guest_prot) {
     return p;
 }
 
-GuestMemory::GuestMemory() : pages_(static_cast<std::size_t>(kGuestSpaceSize >> 12), 0) {
+GuestMemory::GuestMemory() : pages_(static_cast<std::size_t>(kGuestSpaceSize / kPageSize), 0) {
     void* p = mmap(nullptr, kGuestSpaceSize + kGuardSize, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
     if (p == MAP_FAILED) {
         log("cannot reserve guest address space: %s", std::strerror(errno));
@@ -91,9 +96,9 @@ bool GuestMemory::unmap(std::uint32_t addr, std::uint64_t len) {
 std::uint32_t GuestMemory::find_free(std::uint64_t len, std::uint32_t limit) const {
     const std::uint64_t pages = page_round_up(len) >> 12;
     const std::uint64_t top = limit >> 12;
-    if (pages == 0 || top < kLowestAllocPage || top - kLowestAllocPage < pages) return 0;
+    if (pages == 0 || top < lowest_alloc_page() || top - lowest_alloc_page() < pages) return 0;
     std::uint64_t run = 0;
-    for (std::uint64_t i = top; i-- > kLowestAllocPage;) {
+    for (std::uint64_t i = top; i-- > lowest_alloc_page();) {
         if (pages_[i] == 0) {
             if (++run == pages) return static_cast<std::uint32_t>(i << 12);
         } else {

@@ -245,7 +245,8 @@ std::int32_t sys_mmap2(Ctx& c) {
     const int prot = static_cast<int>(c.a[2]);
     const int flags = static_cast<int>(c.a[3]);
     const int fd = static_cast<int>(c.a[4]);
-    const std::uint64_t offset = static_cast<std::uint64_t>(c.a[5]) * kPageSize;
+    // mmap2's offset unit is fixed at 4 KiB by the 32-bit ABI, not the host page size.
+    const std::uint64_t offset = static_cast<std::uint64_t>(c.a[5]) * kMmap2PageSize;
 
     if (len == 0) return -EINVAL;
     const std::uint64_t size = page_round_up(len);
@@ -322,6 +323,83 @@ std::int32_t sys_madvise(Ctx& c) {
     return result_of(::madvise(c.mem.base() + addr, size, static_cast<int>(c.a[2])));
 }
 
+// mremap(2). A guest address g lives at host address base() + g, so resizing cannot hand the
+// mapping back to the host mremap: growing in place is a map_anon of the tail, and MREMAP_MAYMOVE
+// copies the bytes to a fresh guest range. Stubbing this as -ENOMEM made the guest libc's
+// allocator fail ("__cxa_atexit: mmap/mremap failed to allocate ... Out of memory"), which is the
+// state the client froze in.
+std::int32_t sys_mremap(Ctx& c) {
+    constexpr std::uint32_t kMayMove = 1;
+    constexpr std::uint32_t kFixed = 2;
+
+    const std::uint32_t old_address = c.a[0];
+    const std::uint64_t old_size = c.a[1];
+    const std::uint64_t new_size = c.a[2];
+    const std::uint32_t flags = c.a[3];
+    const std::uint32_t requested = c.a[4];
+
+    if ((old_address & kPageMask) != 0 || old_size == 0) return -EINVAL;
+    if ((flags & kFixed) != 0 && (flags & kMayMove) == 0) return -EINVAL;
+
+    const std::uint64_t old_pages = page_round_up(old_size);
+    const std::uint64_t new_pages = page_round_up(new_size);
+    if (old_pages > kGuestSpaceSize || new_pages > kGuestSpaceSize) return -ENOMEM;
+    if (static_cast<std::uint64_t>(old_address) + old_pages > kGuestSpaceSize) return -EFAULT;
+    if (!c.mem.accessible(old_address, old_pages, kPageMapped)) return -EFAULT;
+
+    const std::uint8_t page = c.mem.page_flags(old_address);
+    int prot = 0;
+    if (page & kPageRead) prot |= PROT_READ;
+    if (page & kPageWrite) prot |= PROT_WRITE;
+    if (page & kPageExec) prot |= PROT_EXEC;
+
+    if (new_pages <= old_pages) {
+        if (new_pages < old_pages) {
+            const auto tail = static_cast<std::uint32_t>(old_address + new_pages);
+            const std::uint64_t tail_pages = old_pages - new_pages;
+            if (!c.mem.unmap(tail, tail_pages)) return -EINVAL;
+            c.proc.forget_mappings(tail, tail_pages);
+        }
+        return static_cast<std::int32_t>(old_address);
+    }
+
+    const std::uint64_t grown = new_pages - old_pages;
+    const auto tail = static_cast<std::uint32_t>(old_address + old_pages);
+    if ((flags & kFixed) == 0 && c.mem.range_free(tail, grown)) {
+        if (!c.mem.map_anon(tail, grown, prot)) return -ENOMEM;
+        c.proc.forget_mappings(tail, grown);
+        return static_cast<std::int32_t>(old_address);
+    }
+    if ((flags & kMayMove) == 0) return -ENOMEM;
+
+    std::uint32_t destination = 0;
+    if ((flags & kFixed) != 0) {
+        if ((requested & kPageMask) != 0) return -EINVAL;
+        if (static_cast<std::uint64_t>(requested) + new_pages > kGuestSpaceSize) return -ENOMEM;
+        if (!c.mem.range_free(requested, new_pages)) return -ENOMEM;
+        destination = requested;
+    } else {
+        destination = c.mem.find_free(new_pages, c.proc.mmap_limit);
+        if (destination == 0) return -ENOMEM;
+    }
+
+    // Copy through a writable window, then apply the original protection to the new range.
+    if (!c.mem.map_anon(destination, new_pages, prot | PROT_READ | PROT_WRITE)) return -ENOMEM;
+    c.proc.forget_mappings(destination, new_pages);
+    std::memcpy(c.mem.host_ptr(destination, old_pages, kPageWrite),
+                c.mem.host_ptr(old_address, old_pages, kPageRead),
+                static_cast<std::size_t>(old_pages));
+    if (!c.mem.protect(destination, new_pages, prot)) {
+        c.mem.unmap(destination, new_pages);
+        return -ENOMEM;
+    }
+    if (!c.mem.unmap(old_address, old_pages)) return -EINVAL;
+    c.proc.forget_mappings(old_address, old_pages);
+    c.proc.invalidate(old_address, static_cast<std::uint32_t>(old_pages));
+    c.proc.invalidate(destination, static_cast<std::uint32_t>(new_pages));
+    return static_cast<std::int32_t>(destination);
+}
+
 std::int32_t sys_rt_sigaction(Ctx& c) {
     const std::uint32_t sig = c.a[0];
     if (sig < 1 || sig > 64 || c.a[3] != 8) return -EINVAL;
@@ -373,6 +451,50 @@ std::int32_t sys_sigaltstack(Ctx& c) {
     return 0;
 }
 
+// rt_sigsuspend(const sigset_t *mask, size_t sigsetsize) / sigsuspend(const old_sigset_t *mask):
+// replace the signal mask and block until a deliverable signal is posted to this thread, then
+// return -EINTR so the stop dispatcher runs its handler. Boehm GC (IL2CPP) uses this inside its
+// SIGPWR thread-suspension handler, so without it the handler spins and stop-the-world stalls.
+std::int32_t sys_sigsuspend(Ctx& c, bool rt) {
+    std::uint64_t mask = 0;
+    if (rt) {
+        if (c.a[1] == 8) {
+            if (!read_guest(c.mem, c.a[0], mask)) return -EFAULT;
+        } else if (c.a[1] == 4) {
+            std::uint32_t low = 0;
+            if (!read_guest(c.mem, c.a[0], low)) return -EFAULT;
+            mask = low;
+        } else {
+            return -EINVAL;
+        }
+    } else {
+        std::uint32_t low = 0;
+        if (!read_guest(c.mem, c.a[0], low)) return -EFAULT;
+        mask = low;
+    }
+    c.thread.sigmask = mask & ~((1ULL << (SIGKILL - 1)) | (1ULL << (SIGSTOP - 1)));
+    // Parking here is the guest's GC stop-the-world: a thread that parks and never resumes takes
+    // the whole process with it. Trace the park and the resume so a freeze shows which thread
+    // never got its signal.
+    runtime_report().note_signal_event("sigsuspend enter tid=" + std::to_string(c.thread.tid) +
+                                       " mask=0x" + [&] {
+                                           char text[20];
+                                           std::snprintf(text, sizeof text, "%llx",
+                                                         static_cast<unsigned long long>(c.thread.sigmask));
+                                           return std::string(text);
+                                       }());
+    // Park on the per-thread word that GuestThread::post_signal() wakes, so a signal queued by
+    // another guest thread (or a host-forwarded one) ends the suspension. Re-check after every
+    // spurious wake: a signal that stays blocked by the new mask must not end it.
+    for (;;) {
+        const std::uint32_t token = c.thread.park_token();
+        if (c.thread.has_pending_signals(c.thread.sigmask)) break;
+        c.thread.park(token);
+    }
+    runtime_report().note_signal_event("sigsuspend leave tid=" + std::to_string(c.thread.tid));
+    return -EINTR;
+}
+
 // kill / tkill / tgkill / rt_tgsigqueueinfo inside the guest process. The signal is queued on
 // the target guest thread; Process delivers it at that thread's next stop.
 std::int32_t sys_send_signal(Ctx& c, bool process_directed, std::int32_t tgid, std::int32_t tid, std::uint32_t sig,
@@ -395,12 +517,18 @@ std::int32_t sys_send_signal(Ctx& c, bool process_directed, std::int32_t tgid, s
             if (c.proc.first_time(kSeenSignal | sig)) log("signal %u to another process refused", sig);
             return -EPERM;
         }
-        if (sig != 0) c.thread.post_signal(info);
+        if (sig != 0) {
+            runtime_report().note_signal_event("post sig=" + std::to_string(sig) + " from tid=" +
+                                               std::to_string(c.thread.tid) + " (process)");
+            c.thread.post_signal(info);
+        }
         return 0;
     }
     if (tgid != -1 && tgid != pid) return -ESRCH;
     // Signal 0 only probes for existence and never dereferences the thread.
     if (sig == 0) return c.proc.find_thread(tid) != nullptr ? 0 : -ESRCH;
+    runtime_report().note_signal_event("post sig=" + std::to_string(sig) + " from tid=" +
+                                       std::to_string(c.thread.tid) + " to tid=" + std::to_string(tid));
     // Lookup and post under one lock: the target may be exiting or a carrier lease releasing.
     return c.proc.post_signal_to(tid, info) ? 0 : -ESRCH;
 }
@@ -439,6 +567,11 @@ std::int32_t sys_nanosleep(Ctx& c) {
     timespec req;
     timespec rem{};
     if (!read_timespec(c.mem, c.a[0], false, req)) return -EFAULT;
+    // A guest that computes an absurd sleep from a bad clock parks forever with no visible cause.
+    // Record anything longer than a second so a freeze dump shows it.
+    if (req.tv_sec >= 1) {
+        runtime_report().note_sleep(std::to_string(c.thread.tid), req.tv_sec, req.tv_nsec);
+    }
     if (::nanosleep(&req, &rem) == 0) return 0;
     const int err = errno;
     if (err == EINTR && c.a[1] != 0) write_timespec(c.mem, c.a[1], false, rem);
@@ -563,6 +696,13 @@ std::int32_t sys_futex(Ctx& c, bool time64) {
             if (!read_timespec(c.mem, c.a[3], time64, ts)) return -EFAULT;
             tsp = &ts;
         }
+        // Logged before blocking: the generic trace below only reports calls that returned, so a
+        // hang would otherwise leave the stuck wait invisible.
+        if (trace_enabled()) log("futex wait uaddr=0x%x op=0x%x val=0x%x tid=%d", c.a[0], op, c.a[2], c.thread.tid);
+        // A guest signal posted to this thread sends kInterruptSignal to it, making this syscall
+        // return EINTR so the stop dispatcher can deliver it. No host timeout is added: polling
+        // every wait with one programmed an hrtimer per wait and made the kernel timer path the
+        // phone's hotspot.
         return result_of(::syscall(SYS_futex, uaddr, op, c.a[2], tsp, nullptr, c.a[5]));
     }
     case FUTEX_WAKE:
@@ -887,14 +1027,52 @@ std::int32_t sys_recvmsg(Ctx& c) {
     return static_cast<std::int32_t>(n);
 }
 
+// The 32-bit ARM ABI defines struct epoll_event as packed (EPOLL_PACKED): 4 bytes of events
+// followed immediately by 8 bytes of data, 12 in total. The 64-bit host struct has 4 bytes of
+// padding before the 8-byte data, 16 in total. Handing the guest's buffer to the host kernel, as
+// this used to, makes the guest read the fd or pointer out of the padding, so every reported event
+// is attributed to the wrong descriptor and an event loop waits forever. Translate both ways.
+constexpr std::size_t kGuestEpollEventSize = 12;
+
+void write_guest_epoll_event(std::uint8_t* at, std::uint32_t events, std::uint64_t data) {
+    std::memcpy(at, &events, sizeof events);
+    std::memcpy(at + sizeof events, &data, sizeof data);
+}
+
+bool read_guest_epoll_event(GuestMemory& mem, std::uint32_t address, epoll_event& out) {
+    const std::uint8_t* at = mem.host_ptr(address, kGuestEpollEventSize, kPageRead);
+    if (at == nullptr) return false;
+    std::uint32_t events = 0;
+    std::uint64_t data = 0;
+    std::memcpy(&events, at, sizeof events);
+    std::memcpy(&data, at + sizeof events, sizeof data);
+    out = epoll_event{};
+    out.events = events;
+    out.data.u64 = data;
+    return true;
+}
+
 std::int32_t sys_epoll_wait(Ctx& c) {
     const int max_events = static_cast<int>(c.a[2]);
     if (max_events <= 0 || max_events > 65536) return -EINVAL;
-    std::uint8_t* events = c.mem.host_ptr(c.a[1], static_cast<std::uint64_t>(max_events) * sizeof(epoll_event), kPageWrite);
-    if (events == nullptr) return -EFAULT;
+    if (c.mem.host_ptr(c.a[1], static_cast<std::uint64_t>(max_events) * kGuestEpollEventSize, kPageWrite) ==
+        nullptr) {
+        return -EFAULT;
+    }
+    std::vector<epoll_event> host_events(static_cast<std::size_t>(max_events));
     // epoll_pwait's guest signal mask is ignored: guest masks are emulated.
-    return result_of(::epoll_pwait(static_cast<int>(c.a[0]), reinterpret_cast<epoll_event*>(events), max_events,
-                                   static_cast<int>(c.a[3]), nullptr));
+    const int ready = ::epoll_pwait(static_cast<int>(c.a[0]), host_events.data(), max_events,
+                                    static_cast<int>(c.a[3]), nullptr);
+    if (ready < 0) return -errno;
+    std::uint8_t* guest =
+        c.mem.host_ptr(c.a[1], static_cast<std::uint64_t>(ready) * kGuestEpollEventSize, kPageWrite);
+    if (guest == nullptr) return -EFAULT;
+    for (int i = 0; i < ready; ++i) {
+        write_guest_epoll_event(guest + static_cast<std::size_t>(i) * kGuestEpollEventSize,
+                                host_events[static_cast<std::size_t>(i)].events,
+                                host_events[static_cast<std::size_t>(i)].data.u64);
+    }
+    return ready;
 }
 
 bool read_itimerval(GuestMemory& m, std::uint32_t addr, itimerval& out) {
@@ -1018,6 +1196,8 @@ bool handle_syscall(Process& proc, GuestThread& thread) {
         return thread.tid != 0 ? thread.tid : static_cast<std::int32_t>(::syscall(SYS_gettid));
     };
     record_thread_activity(guest_tid(), ThreadActivityKind::kSyscall, nr);
+    runtime_report().note_syscall(nr);
+    runtime_report().note_syscall_args(guest_tid(), nr, c.a[0], c.a[1], c.a[2]);
     // Marks the syscall finished on every exit path, so a thread sitting inside one (a blocking
     // futex, a poll) reads differently from a thread that merely stopped calling out.
     struct ActivityDone {
@@ -1067,12 +1247,13 @@ bool handle_syscall(Process& proc, GuestThread& thread) {
         const bool watched = open_worth_watching(guest_path);
         if (guest_path != nullptr && proc.open_synthetic_file(guest_path, static_cast<int>(c.a[2]), res)) {
             if (watched) note_watched_open(guest_path, res);
-            break;
+        } else {
+            res = sys_path_call(c, 1, [](Ctx& x, const char* p) -> long {
+                return ::syscall(SYS_openat, static_cast<int>(x.a[0]), p, static_cast<int>(x.a[2]), static_cast<mode_t>(x.a[3]));
+            });
+            if (watched) note_watched_open(guest_path, res);
         }
-        res = sys_path_call(c, 1, [](Ctx& x, const char* p) -> long {
-            return ::syscall(SYS_openat, static_cast<int>(x.a[0]), p, static_cast<int>(x.a[2]), static_cast<mode_t>(x.a[3]));
-        });
-        if (watched) note_watched_open(guest_path, res);
+        if (guest_path != nullptr) runtime_report().note_guest_path_open(guest_path, res >= 0);
         break;
     }
     case NR_faccessat:
@@ -1177,7 +1358,11 @@ bool handle_syscall(Process& proc, GuestThread& thread) {
         res = sys_madvise(c);
         break;
     }
-    case NR_mremap: res = -ENOMEM; break;
+    case NR_mremap: {
+        std::lock_guard<std::mutex> lock(proc.mm_mutex());
+        res = sys_mremap(c);
+        break;
+    }
 
     case NR_ARM_set_tls:
         thread.set_tls(c.a[0]);
@@ -1208,6 +1393,8 @@ bool handle_syscall(Process& proc, GuestThread& thread) {
     }
     case NR_rt_sigprocmask: res = sys_rt_sigprocmask(c); break;
     case NR_sigaltstack: res = sys_sigaltstack(c); break;
+    case NR_rt_sigsuspend: res = sys_sigsuspend(c, true); break;
+    case NR_sigsuspend: res = sys_sigsuspend(c, false); break;
     case NR_kill:
         res = sys_send_signal(c, true, static_cast<std::int32_t>(c.a[0]), 0, c.a[1], nullptr, SI_USER);
         break;
@@ -1240,6 +1427,47 @@ bool handle_syscall(Process& proc, GuestThread& thread) {
     case NR_futex: res = sys_futex(c, false); break;
     case NR_futex_time64: res = sys_futex(c, true); break;
     case NR_sched_yield: res = result_of(::sched_yield()); break;
+    // Unity reads and sets thread scheduling parameters while it sets up its render and job
+    // threads. Returning -ENOSYS (the default) made sched_get_priority_max/min return an errno as
+    // the priority, so answer these the way bionic expects. bionic's sched_param is a single int;
+    // the host's larger struct never reaches the guest.
+    case NR_sched_get_priority_max:
+        res = result_of(::sched_get_priority_max(static_cast<int>(c.a[0])));
+        break;
+    case NR_sched_get_priority_min:
+        res = result_of(::sched_get_priority_min(static_cast<int>(c.a[0])));
+        break;
+    case NR_sched_getparam: {
+        sched_param host{};
+        if (::sched_getparam(0, &host) != 0) {
+            res = -errno;
+            break;
+        }
+        const std::int32_t priority = host.sched_priority;
+        res = write_guest(c.mem, c.a[1], priority) ? 0 : -EFAULT;
+        break;
+    }
+    case NR_sched_setparam:
+    case NR_sched_setscheduler: {
+        sched_param host{};
+        bool have_priority = false;
+        // getparam/setscheduler put the struct in a different argument; setparam always has one.
+        const std::uint32_t address = c.a[nr == NR_sched_setscheduler ? 2 : 1];
+        if (address != 0) {
+            std::int32_t priority = 0;
+            if (!read_guest(c.mem, address, priority)) {
+                res = -EFAULT;
+                break;
+            }
+            host.sched_priority = priority;
+            have_priority = true;
+        }
+        res = nr == NR_sched_setscheduler
+                  ? result_of(::sched_setscheduler(0, static_cast<int>(c.a[1]),
+                                                   have_priority ? &host : nullptr))
+                  : result_of(::sched_setparam(0, have_priority ? &host : nullptr));
+        break;
+    }
     case NR_sched_getaffinity: {
         std::uint8_t* mask = c.mem.host_ptr(c.a[2], c.a[1], kPageWrite);
         res = !mask ? -EFAULT : result_of(::syscall(SYS_sched_getaffinity, static_cast<pid_t>(c.a[0]), c.a[1], mask));
@@ -1389,13 +1617,17 @@ bool handle_syscall(Process& proc, GuestThread& thread) {
     case NR_eventfd2: res = result_of(::syscall(SYS_eventfd2, c.a[0], static_cast<int>(c.a[1]))); break;
     case NR_epoll_create1: res = result_of(::epoll_create1(static_cast<int>(c.a[0]))); break;
     case NR_epoll_ctl: {
-        std::uint8_t* event = c.a[3] != 0 ? c.mem.host_ptr(c.a[3], sizeof(epoll_event), kPageRead) : nullptr;
-        if (c.a[3] != 0 && !event) {
-            res = -EFAULT;
-        } else {
-            res = result_of(::epoll_ctl(static_cast<int>(c.a[0]), static_cast<int>(c.a[1]), static_cast<int>(c.a[2]),
-                                        reinterpret_cast<epoll_event*>(event)));
+        epoll_event host{};
+        epoll_event* event = nullptr;
+        if (c.a[3] != 0) {
+            if (!read_guest_epoll_event(c.mem, c.a[3], host)) {
+                res = -EFAULT;
+                break;
+            }
+            event = &host;
         }
+        res = result_of(::epoll_ctl(static_cast<int>(c.a[0]), static_cast<int>(c.a[1]),
+                                    static_cast<int>(c.a[2]), event));
         break;
     }
     case NR_epoll_wait:

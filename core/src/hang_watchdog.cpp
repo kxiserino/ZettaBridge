@@ -6,10 +6,14 @@
 #include <dirent.h>
 
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
+#include <string>
 #include <thread>
+#include <vector>
 
 #include "zb/host_jni.h"
 #include "zb/runtime_report.h"
@@ -110,6 +114,26 @@ std::vector<ThreadActivitySample> snapshot_thread_activity() {
 // What the kernel says about a thread: "gone" when it no longer exists, otherwise its scheduler
 // state (R running, S sleeping, D uninterruptible), the CPU ticks it burned, and the kernel
 // function it is waiting in. Zero CPU alone cannot tell an idle thread from a dead one.
+// utime+stime ticks of a thread, or 0. Used to pick the busiest thread for a backtrace.
+std::uint64_t thread_cpu_ticks(std::int32_t tid) {
+    char path[64];
+    std::snprintf(path, sizeof path, "/proc/self/task/%d/stat", tid);
+    std::FILE* file = std::fopen(path, "re");
+    if (file == nullptr) return 0;
+    char line[1024];
+    const char* read = std::fgets(line, sizeof line, file);
+    std::fclose(file);
+    if (read == nullptr) return 0;
+    const char* cursor = std::strrchr(line, ')');
+    if (cursor == nullptr) return 0;
+    unsigned long long utime = 0, stime = 0;
+    if (std::sscanf(cursor + 2, "%*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %llu %llu", &utime,
+                    &stime) != 2) {
+        return 0;
+    }
+    return utime + stime;
+}
+
 std::string thread_kernel_state(std::int32_t tid) {
     char path[64];
     std::snprintf(path, sizeof path, "/proc/self/task/%d/stat", tid);
@@ -218,6 +242,23 @@ std::string describe_thread_activity(const ThreadActivitySample& sample) {
     }
 }
 
+namespace {
+
+std::mutex g_reporter_mutex;
+std::function<std::string(std::int32_t)> g_reporter;
+
+std::function<std::string(std::int32_t)> guest_stack_reporter() {
+    std::lock_guard<std::mutex> lock(g_reporter_mutex);
+    return g_reporter;
+}
+
+}  // namespace
+
+void set_guest_stack_reporter(std::function<std::string(std::int32_t)> reporter) {
+    std::lock_guard<std::mutex> lock(g_reporter_mutex);
+    g_reporter = std::move(reporter);
+}
+
 HangWatchdog::HangWatchdog(SnapshotFn snapshot) : snapshot_(std::move(snapshot)) {}
 
 bool HangWatchdog::sample(Clock::time_point now) {
@@ -250,6 +291,48 @@ bool HangWatchdog::sample(Clock::time_point now) {
     }
     previous_ = std::move(next);
 
+    // Freeze detection runs before the "enough notes already" early return: GL host calls stopping
+    // is the signature of the in-game stall (the whole process goes quiet with no guest exit), and
+    // it must be capturable even after the ordinary notes are used up. Dump every thread's guest
+    // stack exactly once, so the report names the guest function each thread is stuck in.
+    {
+        static bool freeze_reported = false;
+        const std::uint64_t last = runtime_report().last_gl_call_millis();
+        if (!freeze_reported && last != 0) {
+            const std::uint64_t now_millis = static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch())
+                    .count());
+            if (now_millis > last + 5'000) {
+                freeze_reported = true;
+                runtime_report().note_watch_detail("freeze",
+                                                   "gl host calls stopped for more than 5s");
+                if (const auto reporter = guest_stack_reporter()) {
+                    // The thread that made the last GL host call is the render thread: its guest
+                    // stack is the frame the game stopped producing frames in. Dump it first, even
+                    // if it falls outside the first twelve slots.
+                    const std::uint64_t gl_tid = runtime_report().gl_last_call_tid();
+                    if (gl_tid != 0) {
+                        const std::string stack = reporter(static_cast<std::int32_t>(gl_tid));
+                        if (!stack.empty()) {
+                            runtime_report().note_watch_detail(
+                                "freeze-gl-thread-" + std::to_string(gl_tid), stack);
+                        }
+                    }
+                    std::size_t dumped = 0;
+                    for (const State& state : previous_) {
+                        if (dumped >= 12) break;
+                        const std::string stack = reporter(state.tid);
+                        if (stack.empty()) continue;
+                        runtime_report().note_watch_detail(
+                            "freeze-thread-" + std::to_string(state.tid), stack);
+                        ++dumped;
+                    }
+                }
+            }
+        }
+    }
+
     if (notes_written_ >= kMaxNotes) return false;
 
     std::vector<const State*> stuck;
@@ -281,6 +364,41 @@ bool HangWatchdog::sample(Clock::time_point now) {
     if (!census_written) {
         census_written = true;
         write_threads_census();
+    }
+
+    // Guest backtraces of the stuck threads, when Process has installed a reporter. This is what
+    // names the guest function a deadlock waits in, which the kernel state alone cannot.
+    if (const auto reporter = guest_stack_reporter()) {
+        std::size_t stacks = 0;
+        for (const State* state : stuck) {
+            if (stacks >= 3) break;
+            const std::string stack = reporter(state->tid);
+            if (stack.empty()) continue;
+            runtime_report().note_watch_detail("stack-" + std::to_string(state->tid), stack);
+            ++stacks;
+        }
+        // A thread that keeps calling out (its activity counter changes, so it is never "stuck")
+        // but never reaches the renderer is invisible to the stuck list. Record the busiest few
+        // threads' backtraces too, so a client-side wait loop can be named.
+        static std::atomic<int> busy_notes{0};
+        if (busy_notes.load(std::memory_order_relaxed) < 4 && !previous_.empty()) {
+            const State* busiest = nullptr;
+            std::uint64_t best = 0;
+            for (const State& state : previous_) {
+                const std::uint64_t ticks = thread_cpu_ticks(state.tid);
+                if (ticks > best) {
+                    best = ticks;
+                    busiest = &state;
+                }
+            }
+            if (busiest != nullptr) {
+                const std::string stack = reporter(busiest->tid);
+                if (!stack.empty()) {
+                    busy_notes.fetch_add(1, std::memory_order_relaxed);
+                    runtime_report().note_watch_detail("busy-" + std::to_string(busiest->tid), stack);
+                }
+            }
+        }
     }
 
     ++notes_written_;

@@ -7,22 +7,35 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Location-based plugins (Kanto) read the host LocationManager through the guest; without
+         these the guest has no location and the client reports "GPS signal not found". -->
+    <!-- The OS freezer stops a non-exempt app outright, which a translated guest cannot survive. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
 
     <application
         android:name=".ZbApplication"
         android:allowBackup="false"
-        android:label="ZettaBridge"
+        android:label="@string/app_name"
         android:icon="@android:drawable/sym_def_app_icon"
         android:theme="@android:style/Theme.Material.Light.DarkActionBar">
 
+        <!-- The entry point: opens the bundled game, or the library screen when there is none. -->
         <activity
-            android:name=".LibraryActivity"
-            android:exported="true">
+            android:name=".BootActivity"
+            android:exported="true"
+            android:theme="@android:style/Theme.Material.NoActionBar">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Kept reachable for builds without a bundled game and for manual imports. -->
+        <activity
+            android:name=".LibraryActivity"
+            android:exported="true" />
 
         <!-- Target of pinned shortcuts: loads the plugin in :guest and starts its launcher activity. -->
         <!-- Runs in the launcher's own process: it ends the :guest process so another plugin can
@@ -98,6 +111,31 @@
             android:process=":guest"
             android:taskAffinity="com.zettabridge.launcher.guest"
             android:theme="@android:style/Theme.Material.NoActionBar" />
+        <!-- Browser/OAuth callback entry point. A plugin that signs in through a browser declares
+             its own scheme in its manifest; the system would otherwise hand the redirect to a
+             separately installed copy of the app. These filters cover the schemes the Kanto client
+             declares (kanto://pair and ac.kanto.client://pair); DeepLinkActivity forwards the URI
+             to the active plugin activity that declares it. -->
+        <activity
+            android:name=".DeepLinkActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:process=":guest"
+            android:taskAffinity="com.zettabridge.launcher.guest"
+            android:theme="@android:style/Theme.NoDisplay">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="kanto" android:host="pair" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="ac.kanto.client" android:host="pair" />
+            </intent-filter>
+        </activity>
         <!-- AndroidIDE injects the Kotlin-based LogWire logger into debug builds. This app has no
              Kotlin stdlib, so its init provider crashes the main process. Drop it. -->
         <provider

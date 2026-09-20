@@ -1,13 +1,27 @@
 #pragma once
 
+#include <unistd.h>
+
 #include <cstdint>
 #include <vector>
 
 namespace zb {
 
 inline constexpr std::uint64_t kGuestSpaceSize = 1ULL << 32;
-inline constexpr std::uint32_t kPageSize = 4096;
-inline constexpr std::uint32_t kPageMask = kPageSize - 1;
+
+// Guest pages are host pages. mmap(MAP_FIXED) and mprotect both require host-page alignment, so a
+// fixed 4 KiB guest page simply cannot be mapped on a device with 16 KiB pages - every mapping
+// fails with EINVAL and the guest dies before it starts. Following the host page size keeps the
+// guest's page table, the ELF mappings and the host protection consistent on both.
+inline const std::uint32_t kPageSize = [] {
+    const long size = ::sysconf(_SC_PAGESIZE);
+    return size > 0 ? static_cast<std::uint32_t>(size) : 4096u;
+}();
+inline const std::uint32_t kPageMask = kPageSize - 1;
+
+// The 32-bit mmap2 ABI fixes its offset unit at 4 KiB whatever the page size is, so it must not
+// follow kPageSize: a file offset would be scaled by the host's page size instead.
+inline constexpr std::uint32_t kMmap2PageSize = 4096;
 
 enum PageFlags : std::uint8_t {
     kPageRead = 1,

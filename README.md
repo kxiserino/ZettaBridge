@@ -1,5 +1,9 @@
 # ZettaBridge
 
+This fork contains experimental Unity startup compatibility fixes. It is not a playable
+Kanto release; see [test results and remaining gaps](docs/unity-startup.md).
+The original [licence](LICENSE) remains unchanged; this fork grants no additional redistribution rights.
+
 **Run 32-bit Android apps on 64-bit-only ARM phones.**
 An open-source ARM32 -> ARM64 native code translator and app launcher.
 

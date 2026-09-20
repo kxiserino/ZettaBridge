@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -32,7 +33,9 @@ public:
     static constexpr std::size_t kMaxDistinctHostCalls = 16;
     static constexpr std::size_t kMaxLibraries = 32;
     // Recorded error and exit texts are folded to one line and cut to this length.
-    static constexpr std::size_t kMaxDetail = 240;
+    // Large enough for a full guest backtrace (24 frames of " | pc@file offset 0x..."): the
+    // freeze dump is only useful if the whole chain survives.
+    static constexpr std::size_t kMaxDetail = 4096;
 
     // Called after every change, with the report unlocked. `structural` is true when the report
     // gained a line (a new distinct host call, a load, a JNI_OnLoad, the exit reason) and false
@@ -60,6 +63,49 @@ public:
     // The first reason wins: a crash report says more than the exit status that follows it.
     void note_guest_exit(const std::string& reason);
 
+    // A per-syscall-number census (diagnostics only), so the report can name a guest syscall spin
+    // that burns kernel time. Lock-free relaxed add on the hot path.
+    static constexpr std::size_t kMaxSyscallNumbers = 512;
+    void note_syscall(std::uint32_t number);
+    // Free-standing named counters, printed as "count-<key>: <value>". Rare enough to take a lock.
+    void note_counter(const std::string& key, std::uint64_t value);
+    // Highest number of JIT processor ids in use, against the pool size, and how often the pool was
+    // found empty. Exhaustion makes thread creation and Java->native calls fail cleanly, which is
+    // otherwise invisible.
+    void note_processor_ids(std::uint64_t used, std::uint64_t limit) {
+        processor_ids_used_.store(used, std::memory_order_relaxed);
+        processor_ids_limit_.store(limit, std::memory_order_relaxed);
+    }
+    void note_processor_ids_exhausted(std::uint64_t limit) {
+        processor_ids_limit_.store(limit, std::memory_order_relaxed);
+        processor_ids_exhausted_.fetch_add(1, std::memory_order_relaxed);
+    }
+    // Guest nanosleeps longer than a second, longest first, at most kMaxLongSleeps of them. A
+    // guest that parks forever on an absurd sleep computed from a bad clock shows up here.
+    static constexpr std::size_t kMaxLongSleeps = 8;
+    void note_sleep(const std::string& tid, long long seconds, long long nanoseconds);
+
+    // Assets the guest asked for and could not open, by name, with the number of attempts. At most
+    // kMaxFailedAssets names. A loader retrying a missing asset behind a loading screen shows here.
+    static constexpr std::size_t kMaxFailedAssets = 16;
+    void note_asset_open_failed(const std::string& name);
+
+    // The host thread that currently holds the thread-registry mutex, or 0 when it is free. Set by
+    // Process on lock and unlock; a freeze dump that shows threads queued on that lock needs the
+    // holder's id to tell a slow critical section from a lost unlock.
+    void note_threads_mutex_owner(std::int32_t host_tid) {
+        threads_mutex_owner_.store(host_tid, std::memory_order_relaxed);
+    }
+    std::int32_t threads_mutex_owner() const {
+        return threads_mutex_owner_.load(std::memory_order_relaxed);
+    }
+    // A rolling window of the most recent syscalls with their first three arguments, whatever the
+    // thread. A freeze dump that shows only "everyone is parked in futex" cannot say which futex,
+    // fd or timeout; this can.
+    static constexpr std::size_t kMaxSyscallTrace = 256;
+    void note_syscall_args(std::int32_t tid, std::uint32_t number, std::uint32_t a0, std::uint32_t a1,
+                           std::uint32_t a2);
+
     // Guest file opens worth knowing about (did the guest find its .so/.dat/.bin payloads and
     // flutter_assets): the most recent kMaxOpenedPaths distinct paths successfully opened that
     // matched the syscall layer's narrow filter, most-recent last, and the first
@@ -69,12 +115,43 @@ public:
     static constexpr std::size_t kMaxFailedOpens = 4;
     void note_guest_open(const std::string& path);
     void note_guest_open_failed(const std::string& path, int error);
+    // Every distinct path the guest opens, with a count, at most kMaxPathOpens of them. A guest
+    // stuck in a resolve-and-map loop reopens the same path, which the filtered lists above hide
+    // because they only keep libraries and assets.
+    static constexpr std::size_t kMaxPathOpens = 512;
+    // `succeeded` is whether the open actually produced a file descriptor. A path opened hundreds
+    // of times and always failing is a link-search miss; one that succeeds is something re-opening
+    // a file it already has.
+    void note_guest_path_open(const std::string& path, bool succeeded);
+    // Guest library mappings: base address, byte length and path, at most kMaxLibraryRegions of
+    // them. A thread backtrace only names the pc/lr the guest libraries live at; unwound frames are
+    // bare addresses, so the map is what puts them in a library.
+    static constexpr std::size_t kMaxLibraryRegions = 128;
+    void note_library_region(std::uint32_t base, std::uint32_t length, const std::string& path);
+
+    // Signal trace: the last kMaxSignalEvents posts (kill/tkill/tgkill) and park/suspend events,
+    // in order. A stop-the-world freeze leaves the posted signal with no matching delivery, which
+    // is invisible everywhere else. Never call this from a host signal handler (it takes a lock).
+    static constexpr std::size_t kMaxSignalEvents = 32;
+    void note_signal_event(const std::string& event);
 
     // GLES section (Phase 5 Task 8): proves or disproves that guest GL calls arrive on a host
     // thread with an EGL context current.
     // One GL host call, always counted; the first call also records its function name and the
     // calling host thread id (gettid()).
     void note_gl_call(const char* function, std::uint64_t host_tid);
+    // Same, but also accumulates a per-function counter so the report shows where the guest's
+    // GL host calls actually go (the bridge-traffic breakdown).
+    void note_gl_call_index(std::uint32_t index, const char* function, std::uint64_t host_tid);
+    // Host time (milliseconds, steady clock) of the most recent GL host call, 0 when none has
+    // happened yet, and the host thread that made it. A stale value means the render loop has
+    // stopped, which is how a freeze is detected without any guest cooperation.
+    std::uint64_t last_gl_call_millis() const {
+        return gl_last_call_millis_.load(std::memory_order_relaxed);
+    }
+    std::uint64_t gl_last_call_tid() const {
+        return gl_last_call_tid_.load(std::memory_order_relaxed);
+    }
     // Whether eglGetCurrentContext() != EGL_NO_CONTEXT on the thread of the first GL call.
     // Recorded once; later calls are ignored.
     void note_gl_egl_context(bool current);
@@ -168,6 +245,37 @@ private:
     std::size_t onload_total_ = 0;
     std::uint64_t registered_natives_ = 0;
     std::string exit_reason_;
+    std::array<std::atomic<std::uint64_t>, kMaxSyscallNumbers> syscall_counts_{};
+    std::atomic<std::int32_t> threads_mutex_owner_{0};
+    std::atomic<std::uint64_t> processor_ids_used_{0};
+    std::atomic<std::uint64_t> processor_ids_limit_{0};
+    std::atomic<std::uint64_t> processor_ids_exhausted_{0};
+    std::vector<std::string> long_sleeps_;
+    std::vector<std::pair<std::string, std::uint64_t>> failed_assets_;
+    struct PathOpenCounts {
+        std::string path;
+        std::uint64_t opens = 0;
+        std::uint64_t failures = 0;
+    };
+    std::vector<PathOpenCounts> path_opens_;
+    struct LibraryRegion {
+        std::uint32_t base = 0;
+        std::uint32_t length = 0;
+        std::string path;
+    };
+    std::vector<LibraryRegion> library_regions_;
+    std::vector<std::pair<std::string, std::uint64_t>> counters_;
+    struct SyscallTraceEntry {
+        std::atomic<std::int32_t> tid{0};
+        std::atomic<std::uint32_t> number{0};
+        std::atomic<std::uint32_t> a0{0};
+        std::atomic<std::uint32_t> a1{0};
+        std::atomic<std::uint32_t> a2{0};
+    };
+    // Lock-free ring: a writer claims a slot, then fills it. A torn read is possible but a
+    // diagnostic trace tolerates that; taking a lock here would tax every syscall.
+    std::array<SyscallTraceEntry, kMaxSyscallTrace> syscall_trace_{};
+    std::atomic<std::uint64_t> syscall_trace_next_{0};
 
     struct NativeCallEntry {
         std::string name;
@@ -178,8 +286,13 @@ private:
 
     std::vector<std::string> opened_paths_;
     std::vector<std::pair<std::string, int>> failed_opens_;
+    std::vector<std::string> signal_events_;
 
     std::uint64_t gl_call_total_ = 0;
+    static constexpr std::size_t kMaxGlCallIndices = 384;
+    std::array<std::atomic<std::uint64_t>, kMaxGlCallIndices> gl_call_counts_{};
+    std::atomic<std::uint64_t> gl_last_call_millis_{0};
+    std::atomic<std::uint64_t> gl_last_call_tid_{0};
     std::string gl_first_call_function_;
     std::uint64_t gl_first_call_tid_ = 0;
     bool gl_egl_context_known_ = false;
@@ -196,7 +309,7 @@ private:
     std::vector<std::pair<std::string, std::string>> crash_details_;
     static constexpr std::size_t kMaxJniDetails = 16;
     std::vector<std::pair<std::string, std::string>> jni_details_;
-    static constexpr std::size_t kMaxWatchDetails = 8;
+    static constexpr std::size_t kMaxWatchDetails = 40;
     std::vector<std::pair<std::string, std::string>> watch_details_;
     static constexpr std::size_t kMaxLooperDetails = 16;
     std::vector<std::pair<std::string, std::string>> looper_details_;

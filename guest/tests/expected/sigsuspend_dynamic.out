@@ -1,0 +1,2 @@
+futex-signal=PASS r=-1 errno=4 seen=10
+sigsuspend=PASS r=-1 errno=4 seen=10

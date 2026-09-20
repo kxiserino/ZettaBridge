@@ -329,6 +329,10 @@ std::uint32_t HostJni::guest_java_vm() const {
     return impl_->api.java_vm;
 }
 
+std::vector<std::string> HostJni::loaded_guest_libraries() const {
+    return impl_->runtime.process().mapped_library_paths();
+}
+
 JniBackend::Env HostJni::current_env() {
     return impl_->thread().env;
 }

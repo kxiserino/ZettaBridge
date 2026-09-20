@@ -18,6 +18,7 @@
 #include <iterator>
 #include <string_view>
 #include <thread>
+#include <unordered_set>
 
 #include <dynarmic/interface/exclusive_monitor.h>
 
@@ -169,9 +170,29 @@ bool map_kuser_page(GuestMemory& mem) {
 
 Process::Process() : monitor_(std::make_unique<Dynarmic::ExclusiveMonitor>(kMaxThreads)) {
     if (const char* precise = std::getenv("ZB_PRECISE_FAULTS")) precise_faults_ = precise[0] == '1';
+    // Diagnostics only: lets the hang watchdog name the guest code a deadlock waits in.
+    set_guest_stack_reporter([this](std::int32_t tid) { return describe_thread_stack(tid); });
 }
 
-Process::~Process() = default;
+Process::~Process() {
+    set_guest_stack_reporter(nullptr);
+}
+
+void TrackedMutex::lock() {
+    mutex_.lock();
+    runtime_report().note_threads_mutex_owner(static_cast<std::int32_t>(::syscall(SYS_gettid)));
+}
+
+void TrackedMutex::unlock() {
+    runtime_report().note_threads_mutex_owner(0);
+    mutex_.unlock();
+}
+
+bool TrackedMutex::try_lock() {
+    if (!mutex_.try_lock()) return false;
+    runtime_report().note_threads_mutex_owner(static_cast<std::int32_t>(::syscall(SYS_gettid)));
+    return true;
+}
 
 void Process::request_exit(int status) {
     exit_status_ = status;
@@ -180,7 +201,7 @@ void Process::request_exit(int status) {
 }
 
 void Process::invalidate(std::uint32_t addr, std::uint32_t len) {
-    std::lock_guard<std::mutex> lock(threads_mutex_);
+    std::lock_guard<TrackedMutex> lock(threads_mutex_);
     for (GuestThread* t : threads_) t->invalidate(addr, len);
     for (GuestThread* t : borrowers_) t->invalidate(addr, len);
 }
@@ -193,6 +214,11 @@ bool Process::first_time(std::uint64_t key) {
 void Process::record_file_mapping(std::uint32_t start, std::uint32_t length, std::uint64_t offset, std::string path,
                                   bool offset_is_vaddr) {
     forget_mappings(start, length);
+    // The base map is what lets an unwound guest address be placed in a library, so report it for
+    // the shared objects only.
+    if (path.size() >= 3 && path.compare(path.size() - 3, 3, ".so") == 0) {
+        runtime_report().note_library_region(start, length, path);
+    }
     file_mappings_.push_back({start, length, offset, std::move(path), offset_is_vaddr});
 }
 
@@ -218,6 +244,72 @@ std::string Process::describe_address(std::uint32_t addr) const {
     return "?";
 }
 
+std::vector<std::string> Process::mapped_library_paths() const {
+    std::vector<std::string> paths;
+    std::unordered_set<std::string> seen;
+    for (const FileMapping& mapping : file_mappings_) {
+        if (!mapping.path.ends_with(".so")) continue;
+        if (seen.insert(mapping.path).second) paths.push_back(mapping.path);
+    }
+    return paths;
+}
+
+std::string Process::describe_thread_stack(std::int32_t tid) const {
+    GuestThread* thread = const_cast<Process*>(this)->find_thread(tid);
+    if (thread == nullptr) return {};
+    const auto& r = thread->regs();
+    char head[96];
+    std::snprintf(head, sizeof head, "pc=%08x@%s", r[15], describe_address(r[15]).c_str());
+    std::string out = head;
+    std::snprintf(head, sizeof head, " lr=%08x@%s", r[14], describe_address(r[14]).c_str());
+    out += head;
+    const std::uint32_t sp = r[13];
+    // sp, fp and 192 words of stack let the chain be unwound offline with the guest libraries'
+    // .ARM.exidx tables (llvm-readelf --unwind decodes them), which is what names a C# frame. The
+    // scan below only finds words that happen to look like addresses, and ARM32 il2cpp keeps no
+    // frame pointer, so it is a rough guess.
+    std::snprintf(head, sizeof head, " sp=%08x fp=%08x cpsr=%08x stack=", r[13], r[11],
+                  thread->cpsr());
+    out += head;
+    for (std::uint32_t i = 0; i < 320; ++i) {
+        const std::uint64_t at = static_cast<std::uint64_t>(sp) + 4ull * i;
+        std::uint32_t word = 0;
+        if (at + 4 <= kGuestSpaceSize) {
+            const std::uint8_t* bytes = mem_.host_ptr(static_cast<std::uint32_t>(at), 4, kPageRead);
+            if (bytes != nullptr) std::memcpy(&word, bytes, sizeof word);
+        }
+        std::snprintf(head, sizeof head, "%08x", word);
+        out += head;
+    }
+    // Walk the guest stack for words that name a known file mapping: return addresses of the
+    // active call chain, plus stale ones, nearest first. Bounded and allocation-light.
+    // A C# call chain is deep, and the first few stack words usually name libc or a libunity
+    // trampoline, so the cap is high enough to reach the frames that matter. Duplicates are
+    // skipped: a saved register or a stale return address would otherwise pad the chain.
+    std::size_t found = 0;
+    std::uint32_t previous = 0;
+    for (std::uint32_t i = 0; i < 2048; ++i) {
+        const std::uint64_t at = static_cast<std::uint64_t>(sp) + 4ull * i;
+        if (at + 4 > kGuestSpaceSize) break;
+        const std::uint8_t* bytes =
+            mem_.host_ptr(static_cast<std::uint32_t>(at), 4, kPageRead);
+        if (bytes == nullptr) break;
+        std::uint32_t word = 0;
+        std::memcpy(&word, bytes, sizeof word);
+        const std::uint32_t code = word & ~1u;
+        if (code < 0x1000) continue;
+        if (code == previous) continue;
+        const std::string where = describe_address(code);
+        if (where == "?") continue;
+        previous = code;
+        std::snprintf(head, sizeof head, " | %08x@", code);
+        out += head;
+        out += where;
+        if (++found >= 24) break;
+    }
+    return out;
+}
+
 void Process::add_textrel_range(std::uint32_t start, std::uint32_t length) {
     textrel_ranges_.emplace_back(start, length);
 }
@@ -233,6 +325,20 @@ bool Process::overlaps_textrel_range(std::uint32_t start, std::uint64_t length) 
 std::string Process::translate_path(const char* guest_path) const {
     const std::string_view path(guest_path);
     if (path == "/proc/self/exe") return exe_path_;
+    // ART needs the ARM64 proxy returned by ClassLoader.findLibrary, but native guest
+    // callers (e.g. Unity loading IL2CPP) need the original ARM32 file at that path.
+    // Canonicalize to handle /data/user/0 vs /data/data without rewriting other apps.
+    if (!plugin_root_.empty() && path.ends_with(".so")) {
+        char resolved[PATH_MAX];
+        if (::realpath(guest_path, resolved) != nullptr) {
+            const std::string_view canonical(resolved);
+            const std::size_t slash = canonical.rfind('/');
+            if (slash != std::string_view::npos &&
+                canonical.substr(0, slash) == plugin_root_ + "/proxy") {
+                return plugin_root_ + "/lib/" + std::string(canonical.substr(slash + 1));
+            }
+        }
+    }
     if (!sysroot_.empty()) {
         for (const auto& m : kPathMappings) {
             if (path.substr(0, m.guest_prefix.size()) == m.guest_prefix) {
@@ -258,12 +364,12 @@ std::string Process::translate_path(const char* guest_path) const {
 }
 
 std::size_t Process::thread_count() const {
-    std::lock_guard<std::mutex> lock(threads_mutex_);
+    std::lock_guard<TrackedMutex> lock(threads_mutex_);
     return threads_.size();
 }
 
 bool Process::is_borrower(const GuestThread& thread) const {
-    std::lock_guard<std::mutex> lock(threads_mutex_);
+    std::lock_guard<TrackedMutex> lock(threads_mutex_);
     for (const GuestThread* t : borrowers_) {
         if (t == &thread) return true;
     }
@@ -271,18 +377,26 @@ bool Process::is_borrower(const GuestThread& thread) const {
 }
 
 int Process::allocate_processor_id() {
-    std::lock_guard<std::mutex> lock(threads_mutex_);
+    std::lock_guard<TrackedMutex> lock(threads_mutex_);
     for (std::size_t i = 0; i < processor_ids_.size(); ++i) {
         if (!processor_ids_.test(i)) {
             processor_ids_.set(i);
+            const std::size_t used = processor_ids_.count();
+            if (used > processor_id_high_water_) {
+                processor_id_high_water_ = used;
+                runtime_report().note_processor_ids(used, kMaxThreads);
+            }
             return static_cast<int>(i);
         }
     }
+    // Thread creation and Java->native calls both fail cleanly at this point, so the guest sees
+    // EAGAIN or a native call that never ran. Record it: the report is the only trace.
+    runtime_report().note_processor_ids_exhausted(kMaxThreads);
     return -1;
 }
 
 GuestThread* Process::find_thread(std::int32_t tid) {
-    std::lock_guard<std::mutex> lock(threads_mutex_);
+    std::lock_guard<TrackedMutex> lock(threads_mutex_);
     for (GuestThread* t : borrowers_) {
         if (t->tid == tid) return t;
     }
@@ -295,7 +409,7 @@ GuestThread* Process::find_thread(std::int32_t tid) {
 bool Process::post_signal_to(std::int32_t tid, const g::siginfo32& info) {
     // post_signal takes no Process lock (atomics and a futex wake), so holding threads_mutex_
     // here cannot deadlock.
-    std::lock_guard<std::mutex> lock(threads_mutex_);
+    std::lock_guard<TrackedMutex> lock(threads_mutex_);
     for (GuestThread* t : borrowers_) {
         if (t->tid == tid) {
             t->post_signal(info);
@@ -323,9 +437,10 @@ std::unique_ptr<GuestThread> Process::create_borrower(GuestThread& carrier) {
     borrower->set_fpscr(carrier.fpscr());
     borrower->set_tls(carrier.tls());
     borrower->tid = carrier.tid;
+    borrower->host_tid = static_cast<std::int32_t>(::syscall(SYS_gettid));
     borrower->sigmask = carrier.sigmask;
     borrower->altstack = carrier.altstack;
-    std::lock_guard<std::mutex> lock(threads_mutex_);
+    std::lock_guard<TrackedMutex> lock(threads_mutex_);
     borrowers_.push_back(borrower.get());
     return borrower;
 }
@@ -341,7 +456,7 @@ void Process::destroy_borrower(std::unique_ptr<GuestThread> borrower, GuestThrea
     carrier.sigmask = borrower->sigmask;
     carrier.altstack = borrower->altstack;
     {
-        std::lock_guard<std::mutex> lock(threads_mutex_);
+        std::lock_guard<TrackedMutex> lock(threads_mutex_);
         std::erase(borrowers_, borrower.get());
     }
     g::siginfo32 info;
@@ -349,12 +464,12 @@ void Process::destroy_borrower(std::unique_ptr<GuestThread> borrower, GuestThrea
     const std::size_t processor_id = borrower->processor_id();
     monitor_->ClearProcessor(processor_id);
     borrower.reset();
-    std::lock_guard<std::mutex> lock(threads_mutex_);
+    std::lock_guard<TrackedMutex> lock(threads_mutex_);
     processor_ids_.reset(processor_id);
 }
 
 void Process::register_thread(GuestThread* thread) {
-    std::lock_guard<std::mutex> lock(threads_mutex_);
+    std::lock_guard<TrackedMutex> lock(threads_mutex_);
     threads_.push_back(thread);
 }
 
@@ -432,6 +547,7 @@ int Process::run(const std::string& path, const std::vector<std::string>& argv, 
     regs[15] = start_pc & ~1u;
     main_->set_cpsr(kCpsrUserMode | ((start_pc & 1) ? kCpsrThumb : 0));
     main_->tid = static_cast<std::int32_t>(::syscall(SYS_gettid));
+    main_->host_tid = main_->tid;
     register_thread(main_.get());
     set_process_signal_target(main_.get());
     install_host_signal_forwarding();
@@ -565,6 +681,7 @@ std::int32_t Process::clone_thread(GuestThread& parent, std::uint32_t flags, std
     std::thread([this, owned = std::move(child), promise = &tid_promise, flags, child_tid_addr]() mutable {
         const auto tid = static_cast<pid_t>(::syscall(SYS_gettid));
         owned->tid = tid;
+        owned->host_tid = static_cast<std::int32_t>(tid);
         if (flags & kCloneChildSetTid) write_guest_u32(mem_, child_tid_addr, static_cast<std::uint32_t>(tid));
         promise->set_value(tid);
         thread_main(std::move(owned));
@@ -599,14 +716,14 @@ void Process::unregister_thread(GuestThread& thread) {
     // Waits for in-flight forwarding handlers, so the caller may free the thread afterwards.
     clear_process_signal_target(&thread);
     monitor_->ClearProcessor(thread.processor_id());
-    std::lock_guard<std::mutex> lock(threads_mutex_);
+    std::lock_guard<TrackedMutex> lock(threads_mutex_);
     std::erase(threads_, &thread);
     processor_ids_.reset(thread.processor_id());
     threads_cv_.notify_all();
 }
 
 void Process::wait_for_threads() {
-    std::unique_lock<std::mutex> lock(threads_mutex_);
+    std::unique_lock<TrackedMutex> lock(threads_mutex_);
     threads_cv_.wait(lock, [&] { return threads_.empty(); });
 }
 

@@ -44,7 +44,11 @@ private:
     // ANativeWindow_toSurface can hand back a guest jobject for the same Java object without a
     // backend call. Keyed by window handle.
     mutable std::mutex surfaces_mutex_;
-    std::unordered_map<std::uint32_t, std::uint64_t> surfaces_;
+    struct Surface {
+        std::uint64_t object;
+        std::uint64_t references;
+    };
+    std::unordered_map<std::uint32_t, Surface> surfaces_;
 };
 
 }  // namespace zb
