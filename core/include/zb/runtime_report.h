@@ -67,6 +67,8 @@ public:
     // that burns kernel time. Lock-free relaxed add on the hot path.
     static constexpr std::size_t kMaxSyscallNumbers = 512;
     void note_syscall(std::uint32_t number);
+    // Free-standing named counters, printed as "count-<key>: <value>". Rare enough to take a lock.
+    void note_counter(const std::string& key, std::uint64_t value);
     // Highest number of JIT processor ids in use, against the pool size, and how often the pool was
     // found empty. Exhaustion makes thread creation and Java->native calls fail cleanly, which is
     // otherwise invisible.
@@ -116,7 +118,7 @@ public:
     // Every distinct path the guest opens, with a count, at most kMaxPathOpens of them. A guest
     // stuck in a resolve-and-map loop reopens the same path, which the filtered lists above hide
     // because they only keep libraries and assets.
-    static constexpr std::size_t kMaxPathOpens = 48;
+    static constexpr std::size_t kMaxPathOpens = 512;
     void note_guest_path_open(const std::string& path);
 
     // Signal trace: the last kMaxSignalEvents posts (kill/tkill/tgkill) and park/suspend events,
@@ -243,6 +245,7 @@ private:
     std::vector<std::string> long_sleeps_;
     std::vector<std::pair<std::string, std::uint64_t>> failed_assets_;
     std::vector<std::pair<std::string, std::uint64_t>> path_opens_;
+    std::vector<std::pair<std::string, std::uint64_t>> counters_;
     struct SyscallTraceEntry {
         std::atomic<std::int32_t> tid{0};
         std::atomic<std::uint32_t> number{0};
