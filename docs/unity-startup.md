@@ -241,9 +241,14 @@ Two changes:
   and tearing the guest thread down. Destroying it made every Java->native call
   spawn a fresh guest thread (a JIT and a bionic thread start) and then race the
   park timeout to use it.
-- The timeout is three seconds. Ten was the worst possible value: it reached the
-  watchdog's threshold exactly, whereas failing the borrow sooner returns an error
-  to the caller and keeps the process alive.
+- The timeout is eight seconds - below the watchdog's ten, but long enough for a
+  spawn. Three was tried first and was a regression: a client doing many
+  Java->native calls starved, the borrow failed, and it retried in a loop that
+  never finished loading (the "LOADING..." splash stuck at exactly 50%, one thread
+  burning CPU, everything else asleep). The OnePlus 7T does far fewer calls there
+  and never showed it.
+- The pool is replenished immediately after a lease takes the last carrier, so the
+  next call finds one already parked instead of waiting for a spawn at all.
 
 ## Checks
 

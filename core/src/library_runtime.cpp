@@ -18,11 +18,12 @@ namespace zb {
 
 namespace {
 
-// Three seconds, not ten: ten is exactly ART's finalizer watchdog limit, so a borrow that timed
-// out at ten seconds got the whole :guest process killed for finalizing an object. Failing the
-// borrow sooner is strictly better - the native call returns an error instead of the process
-// dying - and a spawn that has not parked in three seconds is not going to be useful anyway.
-constexpr std::chrono::milliseconds kCarrierParkTimeout{3000};
+// Eight seconds. Ten is exactly ART's finalizer watchdog limit, so a borrow that timed out there
+// killed the whole :guest process for finalizing an object; three turned out to be short enough
+// that a client doing many Java->native calls starved - a spawn under load can take longer, the
+// borrow failed, and the client retried in a loop that never finished loading. The pool is
+// replenished below so this is a backstop, not the normal path.
+constexpr std::chrono::milliseconds kCarrierParkTimeout{8000};
 
 struct Response {
     bool ok = false;
@@ -470,6 +471,7 @@ std::unique_ptr<LibraryRuntime::Carrier> LibraryRuntime::borrow(std::string& err
     static std::atomic<std::uint64_t> timeouts{0};
     static std::atomic<std::uint64_t> spawns{0};
     bool pool_has_carrier = false;
+    bool pool_is_empty = false;
     runtime_report().note_jni_detail("carrier-borrows",
                                      std::to_string(borrows.fetch_add(1, std::memory_order_relaxed) + 1),
                                      true);
@@ -500,7 +502,7 @@ std::unique_ptr<LibraryRuntime::Carrier> LibraryRuntime::borrow(std::string& err
                                    [&] { return !impl_->available.empty() || impl_->finished; });
         runtime_report().note_jni_detail("carrier-pool", std::to_string(impl_->available.size()), true);
         if (impl_->available.empty()) {
-            error = impl_->finished ? "zbhost exited" : "guest carrier did not park within 3000 ms";
+            error = impl_->finished ? "zbhost exited" : "guest carrier did not park within 8000 ms";
             runtime_report().note_jni_detail(
                 "carrier-timeouts",
                 std::to_string(timeouts.fetch_add(1, std::memory_order_relaxed) + 1), true);
@@ -512,6 +514,19 @@ std::unique_ptr<LibraryRuntime::Carrier> LibraryRuntime::borrow(std::string& err
         record->listed = false;
         record->state = ParkedCarrier::State::Leased;
         record->thread->wake();
+        pool_is_empty = impl_->available.empty();
+    }
+    // Replenish straight away: the next Java->native call should find a carrier already parked
+    // rather than wait for one to be spawned, which is what the timeout above is for.
+    if (pool_is_empty) {
+        auto command = std::make_shared<Command>();
+        command->kind = Command::Kind::SpawnCarrier;
+        Response response = impl_->submit(std::move(command));
+        if (response.ok) {
+            runtime_report().note_jni_detail(
+                "carrier-spawns",
+                std::to_string(spawns.fetch_add(1, std::memory_order_relaxed) + 1), true);
+        }
     }
 
     std::unique_ptr<GuestThread> borrower = impl_->process.create_borrower(*record->thread);
