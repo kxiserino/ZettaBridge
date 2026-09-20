@@ -271,13 +271,13 @@ std::string Process::describe_thread_stack(std::int32_t tid) const {
     std::snprintf(head, sizeof head, " sp=%08x fp=%08x cpsr=%08x stack=", r[13], r[11],
                   thread->cpsr());
     out += head;
-    for (std::uint32_t i = 0; i < 192; ++i) {
+    for (std::uint32_t i = 0; i < 320; ++i) {
         const std::uint64_t at = static_cast<std::uint64_t>(sp) + 4ull * i;
-        if (at + 4 > kGuestSpaceSize) break;
-        const std::uint8_t* bytes = mem_.host_ptr(static_cast<std::uint32_t>(at), 4, kPageRead);
-        if (bytes == nullptr) break;
         std::uint32_t word = 0;
-        std::memcpy(&word, bytes, sizeof word);
+        if (at + 4 <= kGuestSpaceSize) {
+            const std::uint8_t* bytes = mem_.host_ptr(static_cast<std::uint32_t>(at), 4, kPageRead);
+            if (bytes != nullptr) std::memcpy(&word, bytes, sizeof word);
+        }
         std::snprintf(head, sizeof head, "%08x", word);
         out += head;
     }

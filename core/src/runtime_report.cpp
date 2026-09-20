@@ -353,7 +353,7 @@ void RuntimeReport::note_gl_detail(const std::string& key, const std::string& va
     std::shared_ptr<Observer> observer;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        const std::string line = one_line(value, 600);
+        const std::string line = one_line(value, kMaxDetail);
         auto found = std::find_if(gl_details_.begin(), gl_details_.end(),
                                   [&](const auto& entry) { return entry.first == key; });
         if (found != gl_details_.end()) {
@@ -374,7 +374,7 @@ void RuntimeReport::note_crash_detail(const std::string& key, const std::string&
     std::shared_ptr<Observer> observer;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        const std::string line = one_line(value, 600);
+        const std::string line = one_line(value, kMaxDetail);
         auto found = std::find_if(crash_details_.begin(), crash_details_.end(),
                                   [&](const auto& entry) { return entry.first == key; });
         if (found != crash_details_.end()) {
@@ -395,7 +395,7 @@ void RuntimeReport::note_jni_detail(const std::string& key, const std::string& v
     std::shared_ptr<Observer> observer;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        const std::string line = one_line(value, 600);
+        const std::string line = one_line(value, kMaxDetail);
         auto found = std::find_if(jni_details_.begin(), jni_details_.end(),
                                   [&](const auto& entry) { return entry.first == key; });
         if (found != jni_details_.end()) {
@@ -416,7 +416,7 @@ void RuntimeReport::note_looper_detail(const std::string& key, const std::string
     std::shared_ptr<Observer> observer;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        const std::string line = one_line(value, 600);
+        const std::string line = one_line(value, kMaxDetail);
         auto found = std::find_if(looper_details_.begin(), looper_details_.end(),
                                   [&](const auto& entry) { return entry.first == key; });
         if (found != looper_details_.end()) {
@@ -437,7 +437,7 @@ void RuntimeReport::note_watch_detail(const std::string& key, const std::string&
     std::shared_ptr<Observer> observer;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        const std::string line = one_line(value, 600);
+        const std::string line = one_line(value, kMaxDetail);
         auto found = std::find_if(watch_details_.begin(), watch_details_.end(),
                                   [&](const auto& entry) { return entry.first == key; });
         if (found != watch_details_.end()) {
@@ -458,7 +458,7 @@ void RuntimeReport::note_egl_object(const std::string& key, const std::string& v
     std::shared_ptr<Observer> observer;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        const std::string line = one_line(value, 600);
+        const std::string line = one_line(value, kMaxDetail);
         auto found = std::find_if(egl_objects_.begin(), egl_objects_.end(),
                                   [&](const auto& entry) { return entry.first == key; });
         if (found != egl_objects_.end()) {
